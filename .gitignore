@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+vendor/
+installer/Output/
+*.spec
+.pytest_cache/
