@@ -3,7 +3,7 @@
 
 #define AppName "ScreenCam ONVIF"
 #ifndef AppVersion
-  #define AppVersion "1.2.0"
+  #define AppVersion "1.3.0"
 #endif
 #define AppExe "ScreenCamONVIF.exe"
 #define DataDir "{commonappdata}\ScreenCamONVIF"
@@ -60,6 +60,8 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""S
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF RTSP"" dir=in action=allow program=""{app}\mediamtx.exe"" enable=yes profile=any remoteip=localsubnet"; Flags: runhidden; Tasks: firewall
 ; Trava o config.ini (contem a senha do NVR): apenas SYSTEM e Administradores leem
 Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}\config.ini"" /inheritance:r /grant:r ""*S-1-5-18:F"" ""*S-1-5-32-544:F"""; Flags: runhidden
+; Cifra a senha do NVR no disco (DPAPI, escopo de maquina)
+Filename: "{app}\{#AppExe}"; Parameters: "protect-config"; Flags: runhidden waituntilterminated
 ; Instala e inicia o servico (o usuario comum nao consegue para-lo)
 Filename: "{app}\{#AppExe}"; Parameters: "install-service"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#AppExe}"; Parameters: "start"; Flags: runhidden waituntilterminated

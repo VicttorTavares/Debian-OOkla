@@ -99,6 +99,7 @@ def main(argv=None) -> int:
 
     for name in ("install-service", "uninstall-service", "start", "stop", "status"):
         common(sub.add_parser(name))
+    common(sub.add_parser("protect-config", help="cifra a senha do NVR no config.ini (DPAPI)"))
 
     # 'agent' precisa dos argumentos crus
     if argv is None:
@@ -129,7 +130,29 @@ def main(argv=None) -> int:
         service_dispatch()
         return 0
 
+    if args.cmd == "protect-config":
+        return _protect_config(args)
+
     return _service_control(args.cmd, args)
+
+
+def _protect_config(args) -> int:
+    from .config import default_config_path, protect_config_file
+    from . import dpapi
+    path = args.config or default_config_path()
+    if not dpapi.is_available():
+        print("DPAPI indisponivel (necessario Windows); senha mantida em texto.")
+        return 1
+    try:
+        changed = protect_config_file(path)
+    except Exception as exc:
+        print(f"Falha ao cifrar a senha: {exc}")
+        return 1
+    if changed:
+        print("Senha do NVR cifrada no config.ini.")
+    else:
+        print("Nenhuma alteracao (senha ja cifrada, vazia ou arquivo ausente).")
+    return 0
 
 
 def _service_control(cmd: str, args) -> int:

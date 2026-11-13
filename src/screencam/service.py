@@ -48,6 +48,13 @@ class ServiceRunner:
         self.manager = None
 
     def start(self) -> None:
+        # cifra a senha no disco (DPAPI) caso tenha sido deixada em texto claro
+        try:
+            from .config import protect_config_file
+            if self.cfg.path:
+                protect_config_file(self.cfg.path)
+        except Exception:
+            log.debug("Falha ao cifrar a senha no config", exc_info=True)
         self.core.start()
         payload_path = write_agent_payload(self.cfg)
         endpoint = f"http://127.0.0.1:{self.core.control.port}"

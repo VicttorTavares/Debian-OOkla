@@ -492,3 +492,75 @@ def test_server_core_status_and_pause():
         assert core.broker.motion is True
     finally:
         core.broker.set_motion(False)
+
+
+# ---------------------------------------------------------------- DPAPI / senha
+
+class FakeCipher:
+    """Simula a DPAPI: 'cifra' = base64 invertido ligado a uma maquina."""
+    def __init__(self, machine="pc-1", available=True):
+        self.machine = machine
+        self._avail = available
+
+    def is_available(self):
+        return self._avail
+
+    def protect(self, plaintext, entropy=b""):
+        raw = f"{self.machine}|{plaintext}".encode()
+        return base64.b64encode(raw).decode()
+
+    def unprotect(self, b64, entropy=b""):
+        machine, _, text = base64.b64decode(b64).decode().partition("|")
+        if machine != self.machine:
+            raise ValueError("blob de outra maquina")
+        return text
+
+
+def test_password_encode_decode_roundtrip():
+    from screencam.config import PW_PREFIX, decode_password, encode_password, is_encrypted
+    c = FakeCipher()
+    enc = encode_password("S3nha!forte", cipher=c)
+    assert enc.startswith(PW_PREFIX) and "S3nha" not in enc
+    assert is_encrypted(enc) and not is_encrypted("texto")
+    assert decode_password(enc, cipher=c) == "S3nha!forte"
+    assert decode_password("texto-claro", cipher=c) == "texto-claro"  # sem prefixo = mantem
+
+
+def test_password_from_other_machine_fails_safe():
+    from screencam.config import decode_password, encode_password
+    enc = encode_password("abc", cipher=FakeCipher(machine="pc-origem"))
+    # outro PC nao decifra -> senha vazia (nao vaza, nao autentica)
+    assert decode_password(enc, cipher=FakeCipher(machine="pc-destino")) == ""
+
+
+def test_protect_config_file_preserves_comments(tmp_path):
+    from screencam.config import is_encrypted, protect_config_file
+    cfg = tmp_path / "config.ini"
+    cfg.write_text(
+        "[auth]\n"
+        "; comentario importante\n"
+        "enabled = true\n"
+        "username = admin\n"
+        "password = MinhaSenha123   ; senha do NVR\n"
+        "\n"
+        "[video]\n"
+        "codec = h265\n", encoding="utf-8")
+    c = FakeCipher()
+    assert protect_config_file(cfg, cipher=c) is True
+    text = cfg.read_text(encoding="utf-8")
+    assert "; comentario importante" in text and "[video]" in text and "codec = h265" in text
+    assert "MinhaSenha123" not in text
+    # a linha da senha agora esta cifrada e e relida corretamente
+    pw_line = [l for l in text.splitlines() if l.startswith("password")][0]
+    value = pw_line.split("=", 1)[1].strip()
+    assert is_encrypted(value)
+    # idempotente: rodar de novo nao altera
+    assert protect_config_file(cfg, cipher=c) is False
+
+
+def test_protect_config_noop_when_unavailable(tmp_path):
+    from screencam.config import protect_config_file
+    cfg = tmp_path / "config.ini"
+    cfg.write_text("[auth]\npassword = claro\n", encoding="utf-8")
+    assert protect_config_file(cfg, cipher=FakeCipher(available=False)) is False
+    assert "claro" in cfg.read_text(encoding="utf-8")  # inalterado

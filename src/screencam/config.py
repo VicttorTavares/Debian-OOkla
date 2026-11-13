@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import configparser
 import getpass
+import logging
 import os
 import socket
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+log = logging.getLogger(__name__)
+
 APP_NAME = "ScreenCamONVIF"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 
 def program_data_dir() -> Path:
@@ -195,8 +198,86 @@ def load_config(path: str | Path | None = None) -> Config:
         for key, value in parser.items(section):
             if hasattr(obj, key):
                 setattr(obj, key, _coerce(value, getattr(obj, key)))
+    cfg.auth.password = decode_password(cfg.auth.password)
     _validate(cfg)
     return cfg
+
+
+# ---------------------------------------------------------------- senha (DPAPI)
+
+PW_PREFIX = "enc:v1:"
+
+
+def _default_cipher():
+    from . import dpapi
+    return dpapi
+
+
+def is_encrypted(stored: str) -> bool:
+    return stored.startswith(PW_PREFIX)
+
+
+def encode_password(plaintext: str, cipher=None) -> str:
+    """Cifra a senha (DPAPI) e devolve a forma ``enc:v1:<base64>``."""
+    cipher = cipher or _default_cipher()
+    return PW_PREFIX + cipher.protect(plaintext)
+
+
+def decode_password(stored: str, cipher=None) -> str:
+    """Decifra a senha se estiver na forma ``enc:v1:...``; senão devolve como está."""
+    if not is_encrypted(stored):
+        return stored
+    cipher = cipher or _default_cipher()
+    try:
+        return cipher.unprotect(stored[len(PW_PREFIX):])
+    except Exception as exc:
+        log.error("Nao foi possivel decifrar a senha (config copiado de outra maquina?): %s", exc)
+        return ""
+
+
+def protect_config_file(path: str | Path | None = None, cipher=None) -> bool:
+    """Reescreve o config.ini cifrando a senha, se estiver em texto claro.
+
+    Preserva comentários e demais linhas. Retorna True se alterou o arquivo.
+    Não faz nada se a DPAPI nao estiver disponivel (ex.: fora do Windows) ou se
+    a senha ja estiver cifrada/vazia.
+    """
+    cipher = cipher or _default_cipher()
+    p = Path(path) if path else default_config_path()
+    if not p.exists() or not cipher.is_available():
+        return False
+    lines = p.read_text(encoding="utf-8-sig").splitlines(keepends=True)
+    in_auth = False
+    changed = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_auth = stripped.lower() == "[auth]"
+            continue
+        if not in_auth or "=" not in stripped or stripped.startswith((";", "#")):
+            continue
+        key, _, rest = line.partition("=")
+        if key.strip().lower() != "password":
+            continue
+        # remove comentario inline (a senha nao pode conter ; nem #)
+        value = rest
+        for c in (";", "#"):
+            idx = value.find(c)
+            if idx != -1:
+                value = value[:idx]
+        value = value.strip()
+        if not value or is_encrypted(value):
+            return False  # nada a cifrar
+        newline = "\n" if line.endswith("\n") else ""
+        lines[i] = f"{key}= {encode_password(value, cipher)}{newline}"
+        changed = True
+        break
+    if changed:
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text("".join(lines), encoding="utf-8")
+        os.replace(tmp, p)
+        log.info("Senha do NVR cifrada com DPAPI em %s", p)
+    return changed
 
 
 def _validate(cfg: Config) -> None:

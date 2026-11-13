@@ -40,6 +40,7 @@ o agente segue a sessão ativa — todos que usam a máquina são gravados.
 | Eventos | `tns1:RuleEngine/CellMotionDetector/Motion` e `tns1:VideoSource/MotionAlarm` via PullPoint e Notify (push) |
 | Snapshot | `GetSnapshotUri` (JPEG) para miniaturas no NVR |
 | Segurança | WS-UsernameToken (digest), HTTP Digest/Basic; RTSP com usuário/senha |
+| Senha do NVR | Cifrada no disco com **DPAPI** (escopo de máquina) + `config.ini` só para administradores |
 | Carimbo no vídeo | Computador, usuário, data e hora sobre a imagem (útil como prova) |
 | Gravação local (opcional) | Backup em MKV somente durante a atividade, com retenção por dias/espaço |
 | Serviço do Windows | Roda como SYSTEM, inicia no boot, reinicia sozinho; **o usuário comum não fecha** |
@@ -48,7 +49,7 @@ o agente segue a sessão ativa — todos que usam a máquina são gravados.
 
 ## Instalação (administrador)
 
-1. Execute `ScreenCamONVIF-Setup-1.2.0.exe` como administrador.
+1. Execute `ScreenCamONVIF-Setup-1.3.0.exe` como administrador.
 2. No assistente, informe **nome do dispositivo, usuário, senha, porta ONVIF e porta RTSP**.
 3. Deixe marcada a opção *Liberar no Firewall*.
 4. O instalador registra e inicia o **serviço do Windows** `ScreenCamONVIF` (início automático).
@@ -63,6 +64,7 @@ administradores**, pois contém a senha do NVR) e os logs do serviço em
 ```
 ScreenCamONVIF.exe status            estado do serviço
 ScreenCamONVIF.exe stop  / start     parar / iniciar (reinicie após editar o config.ini)
+ScreenCamONVIF.exe protect-config    cifrar a senha do NVR no config.ini (DPAPI)
 ScreenCamONVIF.exe uninstall-service remover o serviço
 ScreenCamONVIF.exe console           rodar em primeiro plano, 1 usuário (teste/diagnóstico)
 ScreenCamONVIF.exe service-console   rodar o serviço + agentes em primeiro plano (diagnóstico)
@@ -71,6 +73,22 @@ ScreenCamONVIF.exe service-console   rodar o serviço + agentes em primeiro plan
 O serviço é protegido pelo Windows: parar/remover exige privilégio de administrador.
 Um usuário comum que encerre o agente de captura pelo Gerenciador de Tarefas o verá
 reiniciar em poucos segundos.
+
+### Senha do NVR protegida (DPAPI)
+
+A senha do NVR **não fica em texto claro** no disco. Na instalação ela é cifrada com a
+**DPAPI** do Windows (escopo de máquina) e gravada como `password = enc:v1:...`. Como o
+serviço roda como SYSTEM e o instalador como administrador — contas diferentes —, o escopo
+é o de **máquina**; somado à ACL (o `config.ini` só abre para administradores), isso garante:
+
+- a senha não aparece legível no arquivo;
+- se alguém **copiar o `config.ini` para outro computador**, a senha **não pode ser
+  decifrada** (a chave DPAPI é vinculada àquela máquina) — o programa trata isso com falha
+  segura (senha vazia, sem vazamento).
+
+Para **trocar a senha**: escreva a nova em texto claro no `config.ini` e rode, como admin,
+`ScreenCamONVIF.exe stop && ScreenCamONVIF.exe protect-config && ScreenCamONVIF.exe start`.
+O serviço também re-cifra sozinho qualquer senha deixada em texto ao iniciar.
 
 ## Configuração no NVR
 
@@ -190,7 +208,7 @@ No Windows 10/11 com Python 3.11+:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
-# => installer\Output\ScreenCamONVIF-Setup-1.2.0.exe
+# => installer\Output\ScreenCamONVIF-Setup-1.3.0.exe
 ```
 
 O script baixa o **FFmpeg** (gyan.dev) e o **MediaMTX v1.21.3**, roda os testes, gera o
@@ -219,6 +237,7 @@ src/screencam/
   recorder.py        gravação local + retenção
   snapshot.py        JPEG para GetSnapshotUri
   winapi.py          ctypes do Windows (DPI, monitores, inatividade, mutex)
+  dpapi.py           cifragem da senha do NVR (CryptProtectData, escopo maquina)
   tray.py            ícone opcional na bandeja (indicador discreto)
   onvif/server.py    serviços Device, Media, Media2, Events (SOAP 1.2)
   onvif/events.py    PullPoint / Notify, eventos de movimento
@@ -260,12 +279,10 @@ conformidade depende dessas medidas organizacionais — não deixe de tratá-las
 
 ## Melhorias sugeridas (próximas versões)
 
-1. **Senha protegida via DPAPI** (hoje o `config.ini` fica com ACL só de administradores;
-   o próximo passo é cifrar a senha do NVR na máquina).
-2. **Sub-stream** (segundo perfil em baixa resolução) para visualização em mosaico no NVR.
-3. **Interface gráfica de configuração** em vez de editar o `config.ini`.
-4. **Desktop Duplication (ddagrab)** com a captura direto na GPU (sem cópia para a CPU), reduzindo ainda mais o uso de CPU com H.265.
-5. **Pré-buffer local** para não perder os primeiros segundos caso o NVR não tenha pré-gravação.
-6. **GOP adaptativo** ("H.265+"): quadro-chave longo enquanto a tela está parada e curto quando há movimento.
-7. **Máscara de privacidade** (borrar janelas de bancos, senhas, etc.).
-8. **Assinatura digital do instalador** para evitar alertas do SmartScreen/antivírus.
+1. **Sub-stream** (segundo perfil em baixa resolução) para visualização em mosaico no NVR.
+2. **Interface gráfica de configuração** em vez de editar o `config.ini`.
+3. **Desktop Duplication (ddagrab)** com a captura direto na GPU (sem cópia para a CPU), reduzindo ainda mais o uso de CPU com H.265.
+4. **Pré-buffer local** para não perder os primeiros segundos caso o NVR não tenha pré-gravação.
+5. **GOP adaptativo** ("H.265+"): quadro-chave longo enquanto a tela está parada e curto quando há movimento.
+6. **Máscara de privacidade** (borrar janelas de bancos, senhas, etc.).
+7. **Assinatura digital do instalador** para evitar alertas do SmartScreen/antivírus.
