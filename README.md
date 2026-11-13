@@ -43,7 +43,7 @@ o agente segue a sessão ativa — todos que usam a máquina são gravados.
 | Carimbo no vídeo | Computador, usuário, data e hora sobre a imagem (útil como prova) |
 | Gravação local (opcional) | Backup em MKV somente durante a atividade, com retenção por dias/espaço |
 | Serviço do Windows | Roda como SYSTEM, inicia no boot, reinicia sozinho; **o usuário comum não fecha** |
-| Multiusuário | Um agente por sessão; segue a troca de usuário ou grava várias sessões RDP |
+| Multiusuário | Canal único que segue a sessão ativa; troca de usuário e RDP gravam no mesmo canal |
 | Discrição | Sem janela/ícone por padrão (`visible_indicator = false`); **não registra o que é digitado** |
 
 ## Instalação (administrador)
@@ -164,22 +164,21 @@ Principais opções (o arquivo completo é comentado):
 | `[recording]` | `enabled` | `false` | Gravação local de backup |
 | `[network]` | `advertise_ip` | `auto` | Fixe o IP se o PC tiver várias placas/VPN |
 | `[service]` | `mode` | `service` | `service` (SYSTEM + agente) ou `console` (1 processo) |
-| | `capture_scope` | `active_console` | `active_console` ou `all_sessions` (RDP) |
+| | `capture_scope` | `active_console` | Canal único; segue a sessão ativa |
 | | `visible_indicator` | `false` | Ícone discreto na bandeja do usuário |
 
 ## Multiusuário e sessões
 
 O requisito "todos os usuários da máquina são gravados" é atendido pelo **gerenciador de
-sessões** do serviço:
+sessões** do serviço, com **um canal único compartilhado** (uma câmera por PC no NVR):
 
-- **`active_console`** (padrão): grava quem estiver usando o monitor físico. Em PCs
-  compartilhados com **troca de usuário** (ou logins sequenciais), o agente é movido para
-  a sessão que ficou ativa — João sai, Maria entra, a gravação segue a Maria. É sempre
-  **uma câmera por PC** no NVR.
-- **`all_sessions`**: para **várias sessões RDP simultâneas**, um agente por sessão. Hoje
-  todas publicam no mesmo caminho RTSP (o NVR vê uma câmera por vez); múltiplos canais ONVIF
-  simultâneos estão na lista de melhorias. Para Terminal Server com muitos usuários ao mesmo
-  tempo, prefira avaliar caso a caso.
+- Em qualquer momento, o serviço mantém **um** agente capturando, na **sessão ativa**.
+- Em PCs compartilhados com **troca de usuário** (ou logins sequenciais), o agente segue a
+  sessão que ficou ativa — João sai, Maria entra, a gravação passa para a Maria.
+- Com **várias sessões RDP simultâneas**, o canal único segue a sessão ativa (console tem
+  prioridade; entre sessões RDP, a de menor ID). Todos os usuários acabam gravados **no mesmo
+  canal**, um de cada vez — que foi o comportamento escolhido. `active_console` e
+  `all_sessions` levam, hoje, a esse mesmo canal único.
 
 O serviço injeta o agente via `WTSQueryUserToken` + `CreateProcessAsUser` (área de trabalho
 `winsta0\default`) e o reinicia se cair. O agente só recebe uma configuração **sem senhas**
@@ -235,8 +234,8 @@ tests/               testes de integração ONVIF + controle/sessões/serviço
 - **Tela bloqueada / logon / UAC**: o Windows não permite capturar a área de trabalho
   segura; o vídeo para durante o bloqueio e na tela de login (sem usuário, nada a gravar)
   e volta sozinho ao desbloquear.
-- **RDP simultâneo**: com `all_sessions`, as sessões publicam no mesmo caminho RTSP, então
-  o NVR vê uma por vez. Vários canais ONVIF simultâneos estão na lista de melhorias.
+- **RDP simultâneo**: canal único — o NVR grava a sessão ativa de cada vez, não as várias
+  simultaneamente (comportamento escolhido). Vários canais ONVIF é uma possível evolução futura.
 - **Áudio de chamadas com fone**: o loopback captura o dispositivo de saída **padrão**;
   se o usuário trocar de dispositivo, a captura se reajusta na próxima reconexão.
 - **Não testado ainda** em hardware Windows real, com GPU e com NVR Intelbras/Hikvision
@@ -263,11 +262,10 @@ conformidade depende dessas medidas organizacionais — não deixe de tratá-las
 
 1. **Senha protegida via DPAPI** (hoje o `config.ini` fica com ACL só de administradores;
    o próximo passo é cifrar a senha do NVR na máquina).
-2. **Vários canais ONVIF** para RDP simultâneo (uma câmera por sessão no NVR).
-3. **Sub-stream** (segundo perfil em baixa resolução) para visualização em mosaico no NVR.
-4. **Interface gráfica de configuração** em vez de editar o `config.ini`.
-5. **Desktop Duplication (ddagrab)** com a captura direto na GPU (sem cópia para a CPU), reduzindo ainda mais o uso de CPU com H.265.
-6. **Pré-buffer local** para não perder os primeiros segundos caso o NVR não tenha pré-gravação.
-7. **GOP adaptativo** ("H.265+"): quadro-chave longo enquanto a tela está parada e curto quando há movimento.
-8. **Máscara de privacidade** (borrar janelas de bancos, senhas, etc.).
-9. **Assinatura digital do instalador** para evitar alertas do SmartScreen/antivírus.
+2. **Sub-stream** (segundo perfil em baixa resolução) para visualização em mosaico no NVR.
+3. **Interface gráfica de configuração** em vez de editar o `config.ini`.
+4. **Desktop Duplication (ddagrab)** com a captura direto na GPU (sem cópia para a CPU), reduzindo ainda mais o uso de CPU com H.265.
+5. **Pré-buffer local** para não perder os primeiros segundos caso o NVR não tenha pré-gravação.
+6. **GOP adaptativo** ("H.265+"): quadro-chave longo enquanto a tela está parada e curto quando há movimento.
+7. **Máscara de privacidade** (borrar janelas de bancos, senhas, etc.).
+8. **Assinatura digital do instalador** para evitar alertas do SmartScreen/antivírus.

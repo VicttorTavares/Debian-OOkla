@@ -37,15 +37,17 @@ class SessionBackend(Protocol):
 class SessionManager:
     """Observa as sessões e mantém agentes conforme ``capture_scope``.
 
-    - active_console: um agente apenas, na sessão ativa (troca de usuário segue o ativo).
-    - all_sessions:   um agente por sessão interativa com usuário (RDP simultâneo).
+    Canal único compartilhado: um único agente captura por vez, na sessão ativa.
+    Em troca de usuário (console) ou múltiplas sessões RDP, o canal segue a sessão
+    ativa — prioriza o console físico e, entre sessões RDP, a de menor ID (estável).
+    Todos os usuários acabam gravados no mesmo canal do NVR, um de cada vez.
     """
 
     def __init__(self, backend: SessionBackend, capture_scope: str = "active_console",
                  poll_interval: float = 2.0, respawn_backoff: float = 3.0,
                  clock=time.monotonic):
         self.backend = backend
-        self.capture_scope = capture_scope
+        self.capture_scope = capture_scope  # mantido para compatibilidade/registro
         self.poll_interval = poll_interval
         self.respawn_backoff = respawn_backoff
         self._clock = clock
@@ -56,12 +58,12 @@ class SessionManager:
 
     # ------------------------------------------------------------------
     def _targets(self, sessions: list[SessionInfo]) -> set[int]:
+        """Escolhe no máximo UMA sessão (canal único): console ativo tem prioridade;
+        entre sessões RDP ativas, a de menor ID, para a escolha ser estável."""
         usable = [s for s in sessions if s.user and s.active]
-        if self.capture_scope == "all_sessions":
-            return {s.sid for s in usable}
-        # active_console: prioriza a sessão de console ativa; senão a primeira ativa
         console = [s for s in usable if s.is_console]
-        chosen = console[0] if console else (usable[0] if usable else None)
+        pool = console or usable
+        chosen = min(pool, key=lambda s: s.sid) if pool else None
         return {chosen.sid} if chosen else set()
 
     def reconcile(self) -> None:

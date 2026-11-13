@@ -436,7 +436,8 @@ def test_session_manager_active_console_follows_user():
     assert m._agents[2].is_alive()
 
 
-def test_session_manager_all_sessions_simultaneous():
+def test_session_manager_single_shared_channel():
+    # Canal único: mesmo com várias sessões RDP ativas, apenas UM agente captura.
     from screencam.sessions import SessionInfo, SessionManager
 
     class A:
@@ -447,16 +448,26 @@ def test_session_manager_all_sessions_simultaneous():
             pass
 
     class Backend:
+        def __init__(self):
+            self.sessions = []
+
         def list_sessions(self):
-            return [SessionInfo(3, "a", True, False), SessionInfo(4, "b", True, False),
-                    SessionInfo(5, "", True, True)]  # 5 sem usuário -> ignorada
+            return list(self.sessions)
 
         def launch_agent(self, sid):
             return A()
 
-    m = SessionManager(Backend(), "all_sessions")
+    b = Backend()
+    m = SessionManager(b, "all_sessions")
+    # duas RDP ativas (sem console) + uma sem usuário -> escolhe a de menor ID (3)
+    b.sessions = [SessionInfo(4, "b", True, False), SessionInfo(3, "a", True, False),
+                  SessionInfo(5, "", True, True)]
     m.reconcile()
-    assert set(m._agents) == {3, 4}
+    assert set(m._agents) == {3}
+    # console físico aparece -> tem prioridade sobre as RDP
+    b.sessions.append(SessionInfo(1, "console", True, True))
+    m.reconcile()
+    assert set(m._agents) == {1}
 
 
 def test_server_core_status_and_pause():
