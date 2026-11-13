@@ -7,17 +7,26 @@ movimento"** para o NVR. Com isso, o NVR grava exatamente os períodos em que o
 usuário está usando o computador, como faz com uma câmera de verdade.
 
 ```
- ┌───────────────────────── Computador Windows ──────────────────────────┐
- │                                                                       │
- │  GetLastInputInfo ──► ActivityMonitor ──► evento "Motion" ─┐          │
- │  (mouse/teclado)                                           │          │
- │                                                            ▼          │
- │  Tela (gdigrab) ─┐                                 Servidor ONVIF ◄───┼── NVR (porta 8000)
- │                  ├─► FFmpeg (H.265 + AAC/G.711) ─► MediaMTX (RTSP) ◄──┼── NVR (porta 8554)
- │  Áudio WASAPI  ──┘        loopback + microfone                        │
- │                                                    WS-Discovery ◄─────┼── busca do NVR (UDP 3702)
- └───────────────────────────────────────────────────────────────────────┘
+ ┌───────────────────────────── Computador Windows ──────────────────────────────┐
+ │                                                                               │
+ │  Sessão do usuário (João, Maria, ...)        Serviço SYSTEM (oculto, só admin)│
+ │  ┌─────────────── Agente de captura ─────┐   ┌──────────── ServerCore ───────┐│
+ │  │ Tela (gdigrab) ─┐                     │   │                               ││
+ │  │ Áudio WASAPI  ──┼─► FFmpeg (H.265 +   │──►│ MediaMTX (RTSP) ◄─────────────┼┼─ NVR :8554
+ │  │ (sistema+mic)   │   AAC/G.711) ───────┼─┐ │ Servidor ONVIF ◄──────────────┼┼─ NVR :8000
+ │  │ GetLastInputInfo├─► atividade ────────┼─┼►│ EventBroker (Motion)          ││
+ │  └─────────────────┘      (loopback)     │ │ │ WS-Discovery ◄────────────────┼┼─ NVR :3702
+ │        ▲  o serviço injeta/reinicia      │ │ │ Gravação local (backup)       ││
+ │        └── SessionManager (WTS) ─────────┼─┘ └───────────────────────────────┘│
+ │           segue a sessão ativa / troca de usuário                             │
+ └───────────────────────────────────────────────────────────────────────────────┘
 ```
+
+O **serviço** (conta SYSTEM) hospeda RTSP/ONVIF/descoberta/gravação e guarda a senha;
+o usuário comum não consegue pará-lo nem lê-lo. Como a sessão 0 do Windows não enxerga
+a área de trabalho do usuário, um **agente de captura** é injetado pelo serviço em cada
+sessão de usuário e reiniciado automaticamente se for encerrado. Em PCs compartilhados,
+o agente segue a sessão ativa — todos que usam a máquina são gravados.
 
 ## Funcionalidades
 
@@ -33,18 +42,35 @@ usuário está usando o computador, como faz com uma câmera de verdade.
 | Segurança | WS-UsernameToken (digest), HTTP Digest/Basic; RTSP com usuário/senha |
 | Carimbo no vídeo | Computador, usuário, data e hora sobre a imagem (útil como prova) |
 | Gravação local (opcional) | Backup em MKV somente durante a atividade, com retenção por dias/espaço |
-| Privacidade | Ícone visível na bandeja; **não registra o que é digitado** (só detecta que houve entrada) |
+| Serviço do Windows | Roda como SYSTEM, inicia no boot, reinicia sozinho; **o usuário comum não fecha** |
+| Multiusuário | Um agente por sessão; segue a troca de usuário ou grava várias sessões RDP |
+| Discrição | Sem janela/ícone por padrão (`visible_indicator = false`); **não registra o que é digitado** |
 
-## Instalação (usuário final)
+## Instalação (administrador)
 
-1. Execute `ScreenCamONVIF-Setup-1.1.0.exe` como administrador.
+1. Execute `ScreenCamONVIF-Setup-1.2.0.exe` como administrador.
 2. No assistente, informe **nome do dispositivo, usuário, senha, porta ONVIF e porta RTSP**.
-3. Deixe marcadas as opções *Iniciar automaticamente* e *Liberar no Firewall*.
-4. O ícone de câmera aparece na bandeja: **cinza** = ocioso, **vermelho** = usuário ativo
-   (evento de movimento enviado), **amarelo** = pausado.
+3. Deixe marcada a opção *Liberar no Firewall*.
+4. O instalador registra e inicia o **serviço do Windows** `ScreenCamONVIF` (início automático).
+   Não há ícone para o usuário comum.
 
-A configuração fica em `C:\ProgramData\ScreenCamONVIF\config.ini` e os logs em
-`%LOCALAPPDATA%\ScreenCamONVIF\logs`.
+A configuração fica em `C:\ProgramData\ScreenCamONVIF\config.ini` (legível **apenas por
+administradores**, pois contém a senha do NVR) e os logs do serviço em
+`C:\ProgramData\ScreenCamONVIF\logs`.
+
+### Controle (apenas administrador)
+
+```
+ScreenCamONVIF.exe status            estado do serviço
+ScreenCamONVIF.exe stop  / start     parar / iniciar (reinicie após editar o config.ini)
+ScreenCamONVIF.exe uninstall-service remover o serviço
+ScreenCamONVIF.exe console           rodar em primeiro plano, 1 usuário (teste/diagnóstico)
+ScreenCamONVIF.exe service-console   rodar o serviço + agentes em primeiro plano (diagnóstico)
+```
+
+O serviço é protegido pelo Windows: parar/remover exige privilégio de administrador.
+Um usuário comum que encerre o agente de captura pelo Gerenciador de Tarefas o verá
+reiniciar em poucos segundos.
 
 ## Configuração no NVR
 
@@ -57,8 +83,26 @@ A configuração fica em `C:\ProgramData\ScreenCamONVIF\config.ini` e os logs em
    "ONVIF Media2"/"Profile T", ative-a.
 4. **Áudio**: habilite o áudio no canal (*Stream principal → Tipo: Vídeo e Áudio*).
    Se o NVR não reproduzir o áudio, altere `codec = g711` no `config.ini`.
-5. Em alguns NVRs é preciso ativar *"Detecção de movimento"* / *"Eventos ONVIF"* no canal
-   (Intelbras, Hikvision, Dahua e similares aceitam os tópicos `CellMotionDetector` ou `MotionAlarm`).
+5. Em alguns NVRs é preciso ativar *"Detecção de movimento"* / *"Eventos ONVIF"* no canal.
+
+### Intelbras e Hikvision
+
+Os dois emitem os tópicos padrão que o programa gera (`CellMotionDetector/Motion` e
+`VideoSource/MotionAlarm`, via PullPoint), então a gravação por movimento funciona como
+em qualquer câmera ONVIF.
+
+- **Intelbras** (NVD/MHDX/iNVD): *Adicionar Dispositivo → Buscar* (ONVIF), ou manual com
+  *Fabricante: ONVIF*, porta **8000**. Em *Evento → Detecção de Movimento* marque o canal e
+  ligue a gravação por movimento na agenda. H.265 é aceito nos modelos atuais; nos antigos,
+  use `codec = h264`. Áudio: *Codec de Áudio* no canal; se não tocar, `codec = g711`.
+- **Hikvision** (DS-7xxx/iDS, Hik-Connect): *Configuração → Câmera → adicionar* com
+  *Protocolo: ONVIF*, porta **8000**. O Hikvision lê o codec pelo Media2 (H.265 ok).
+  Ative *Evento → Evento Básico → Detecção de Movimento* no canal e, na agenda de gravação,
+  selecione *Evento/Movimento*. Dica: se os eventos ONVIF não chegarem, confirme que o
+  usuário ONVIF criado no NVR tem permissão de evento e que data/hora do PC e do NVR batem.
+
+> Em ambos, se o NVR só gravar "contínuo", ele ainda grava — mas sem a economia do gatilho
+> por movimento. Vale conferir se o canal está em modo *Evento*.
 
 ## Compressão H.265 e economia de armazenamento
 
@@ -119,6 +163,27 @@ Principais opções (o arquivo completo é comentado):
 | | `stream_mode` | `continuous` | `on_activity` só transmite durante a atividade |
 | `[recording]` | `enabled` | `false` | Gravação local de backup |
 | `[network]` | `advertise_ip` | `auto` | Fixe o IP se o PC tiver várias placas/VPN |
+| `[service]` | `mode` | `service` | `service` (SYSTEM + agente) ou `console` (1 processo) |
+| | `capture_scope` | `active_console` | `active_console` ou `all_sessions` (RDP) |
+| | `visible_indicator` | `false` | Ícone discreto na bandeja do usuário |
+
+## Multiusuário e sessões
+
+O requisito "todos os usuários da máquina são gravados" é atendido pelo **gerenciador de
+sessões** do serviço:
+
+- **`active_console`** (padrão): grava quem estiver usando o monitor físico. Em PCs
+  compartilhados com **troca de usuário** (ou logins sequenciais), o agente é movido para
+  a sessão que ficou ativa — João sai, Maria entra, a gravação segue a Maria. É sempre
+  **uma câmera por PC** no NVR.
+- **`all_sessions`**: para **várias sessões RDP simultâneas**, um agente por sessão. Hoje
+  todas publicam no mesmo caminho RTSP (o NVR vê uma câmera por vez); múltiplos canais ONVIF
+  simultâneos estão na lista de melhorias. Para Terminal Server com muitos usuários ao mesmo
+  tempo, prefira avaliar caso a caso.
+
+O serviço injeta o agente via `WTSQueryUserToken` + `CreateProcessAsUser` (área de trabalho
+`winsta0\default`) e o reinicia se cair. O agente só recebe uma configuração **sem senhas**
+(`ProgramData\ScreenCamONVIF\runtime\agent.json`); as credenciais do NVR ficam só no serviço.
 
 ## Gerar o instalador (desenvolvedor)
 
@@ -126,7 +191,7 @@ No Windows 10/11 com Python 3.11+:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
-# => installer\Output\ScreenCamONVIF-Setup-1.1.0.exe
+# => installer\Output\ScreenCamONVIF-Setup-1.2.0.exe
 ```
 
 O script baixa o **FFmpeg** (gyan.dev) e o **MediaMTX v1.21.3**, roda os testes, gera o
@@ -135,59 +200,74 @@ executável com PyInstaller e compila o instalador com Inno Setup. O workflow
 instalador como artefato.
 
 Para executar a partir do código-fonte: `pip install -r requirements.txt`, coloque
-`ffmpeg.exe` e `mediamtx.exe` em `vendor\` e rode `python -m screencam` dentro de `src\`.
-`python -m pytest tests` roda os testes (também no Linux).
+`ffmpeg.exe` e `mediamtx.exe` em `vendor\` e rode `python -m screencam console` dentro de
+`src\`. `python -m pytest tests` roda os testes (também no Linux).
 
 ## Estrutura
 
 ```
 src/screencam/
-  __main__.py        ponto de entrada (CLI / bandeja)
-  app.py             orquestra todos os componentes
+  __main__.py        CLI: console | service-run | agent | install-service | ...
+  app.py             ServerCore (serviço) + CaptureAgent (captura) + ConsoleApp
+  service.py         serviço Windows (pywin32) + ServiceRunner + SessionManager
+  sessions.py        gerência de sessões (lógica) + backend WTS do Windows
+  agent.py           entrada do agente de captura por sessão
+  control.py         canal de controle loopback serviço↔agentes (atividade)
   activity.py        detecção de mouse/teclado (GetLastInputInfo)
   audio.py           captura WASAPI loopback + microfone e mixagem
   streamer.py        FFmpeg (captura/encode) e MediaMTX (RTSP), com watchdog
   encoders.py        H.265/H.264, detecção de GPU e parâmetros de compressão
   recorder.py        gravação local + retenção
   snapshot.py        JPEG para GetSnapshotUri
-  tray.py            ícone e menu na bandeja
+  winapi.py          ctypes do Windows (DPI, monitores, inatividade, mutex)
+  tray.py            ícone opcional na bandeja (indicador discreto)
   onvif/server.py    serviços Device, Media, Media2, Events (SOAP 1.2)
   onvif/events.py    PullPoint / Notify, eventos de movimento
   onvif/discovery.py WS-Discovery
   onvif/auth.py      WS-UsernameToken e HTTP Digest/Basic
-installer/           Inno Setup + modelo de config
+installer/           Inno Setup (instala serviço + trava ACL) + modelo de config
 scripts/             build.ps1, launcher, ícone
-tests/               testes de integração ONVIF
+tests/               testes de integração ONVIF + controle/sessões/serviço
 ```
 
 ## Limitações conhecidas
 
-- **Tela bloqueada / UAC**: o Windows não permite capturar a área de trabalho segura;
-  o vídeo para durante o bloqueio e volta sozinho ao desbloquear.
-- **Uma sessão por computador**: as portas são fixas, então em servidores com vários
-  usuários simultâneos (RDS/Terminal Server) apenas uma sessão transmite.
+- **Tela bloqueada / logon / UAC**: o Windows não permite capturar a área de trabalho
+  segura; o vídeo para durante o bloqueio e na tela de login (sem usuário, nada a gravar)
+  e volta sozinho ao desbloquear.
+- **RDP simultâneo**: com `all_sessions`, as sessões publicam no mesmo caminho RTSP, então
+  o NVR vê uma por vez. Vários canais ONVIF simultâneos estão na lista de melhorias.
 - **Áudio de chamadas com fone**: o loopback captura o dispositivo de saída **padrão**;
   se o usuário trocar de dispositivo, a captura se reajusta na próxima reconexão.
-- O `config.ini` (com a senha do NVR) é legível pelos usuários locais, pois o
-  programa roda na sessão do usuário. Veja a sugestão de serviço abaixo.
+- **Não testado ainda** em hardware Windows real, com GPU e com NVR Intelbras/Hikvision
+  físico: os testes aqui cobrem a lógica (ONVIF, controle, sessões) e o pipeline FFmpeg.
 
-## LGPD e uso responsável
+## LGPD e uso responsável (importante)
 
-Gravar a tela e o áudio de colaboradores envolve dados pessoais. Recomenda-se:
-política interna escrita e ciência do colaborador, finalidade definida, retenção
-limitada no NVR, acesso restrito às gravações e cuidado com o microfone (que pode
-captar conversas de terceiros — avalie deixar `microphone = false`). O software
-mantém um ícone visível na bandeja e não registra o conteúdo digitado.
+Esta versão grava de forma **discreta** (sem ícone, como serviço), o que **aumenta** o dever
+de transparência, não o contrário. A gravação de tela, áudio e microfone de colaboradores
+trata dados pessoais e exige base legal. Recomenda-se:
+
+- **Ciência prévia e por escrito** do colaborador (política interna / contrato), mesmo sem
+  indicador visível na tela. Considere um **aviso no logon** informando que a sessão é gravada.
+- **Finalidade definida e proporcional**, retenção limitada no NVR e acesso restrito às gravações.
+- **Microfone**: pode captar conversas de terceiros não relacionados; avalie `microphone = false`
+  ou ciente dos presentes.
+- O indicador discreto pode ser ligado com `visible_indicator = true` quando a política exigir
+  sinalização visível.
+
+A ocultação atende ao requisito operacional (o usuário não desliga a gravação), mas a
+conformidade depende dessas medidas organizacionais — não deixe de tratá-las.
 
 ## Melhorias sugeridas (próximas versões)
 
-1. **Serviço do Windows + agente por sessão**: ONVIF/RTSP rodando como serviço
-   (SYSTEM, senha protegida via DPAPI) e um agente leve na sessão do usuário só
-   para capturar. Impede que o usuário encerre o processo ou leia a senha.
-2. **Sub-stream** (segundo perfil em baixa resolução) para visualização em mosaico no NVR.
-3. **Interface gráfica de configuração** em vez de editar o `config.ini`.
-4. **Desktop Duplication (ddagrab)** com a captura direto na GPU (sem cópia para a CPU), reduzindo ainda mais o uso de CPU com H.265.
-5. **Pré-buffer local** para não perder os primeiros segundos caso o NVR não tenha pré-gravação.
-6. **GOP adaptativo** ("H.265+"): quadro-chave longo enquanto a tela está parada e curto quando há movimento.
-7. **Máscara de privacidade** (borrar janelas de bancos, senhas, etc.).
-8. **Assinatura digital do instalador** para evitar alertas do SmartScreen/antivírus.
+1. **Senha protegida via DPAPI** (hoje o `config.ini` fica com ACL só de administradores;
+   o próximo passo é cifrar a senha do NVR na máquina).
+2. **Vários canais ONVIF** para RDP simultâneo (uma câmera por sessão no NVR).
+3. **Sub-stream** (segundo perfil em baixa resolução) para visualização em mosaico no NVR.
+4. **Interface gráfica de configuração** em vez de editar o `config.ini`.
+5. **Desktop Duplication (ddagrab)** com a captura direto na GPU (sem cópia para a CPU), reduzindo ainda mais o uso de CPU com H.265.
+6. **Pré-buffer local** para não perder os primeiros segundos caso o NVR não tenha pré-gravação.
+7. **GOP adaptativo** ("H.265+"): quadro-chave longo enquanto a tela está parada e curto quando há movimento.
+8. **Máscara de privacidade** (borrar janelas de bancos, senhas, etc.).
+9. **Assinatura digital do instalador** para evitar alertas do SmartScreen/antivírus.

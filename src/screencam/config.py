@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 APP_NAME = "ScreenCamONVIF"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 
 def program_data_dir() -> Path:
@@ -125,6 +125,21 @@ class RecordingCfg:
 
 
 @dataclass
+class ServiceCfg:
+    # service  = serviço SYSTEM + agente por sessão (produção, usuário não fecha)
+    # console  = tudo em um processo na sessão atual (dev / instalação simples)
+    mode: str = "service"
+    service_name: str = "ScreenCamONVIF"
+    # active_console = grava a sessão ativa no monitor físico (troca de usuário segue o ativo)
+    # all_sessions   = grava todas as sessões interativas simultâneas (uma câmera por sessão; RDP)
+    capture_scope: str = "active_console"
+    # Indicador visível (ícone na bandeja) na sessão do usuário. Desligado = gravação discreta
+    visible_indicator: bool = False
+    # Porta do canal de controle interno (apenas 127.0.0.1, serviço <-> agentes)
+    control_port: int = 8099
+
+
+@dataclass
 class Config:
     device: DeviceCfg = field(default_factory=DeviceCfg)
     auth: AuthCfg = field(default_factory=AuthCfg)
@@ -133,6 +148,7 @@ class Config:
     audio: AudioCfg = field(default_factory=AudioCfg)
     activity: ActivityCfg = field(default_factory=ActivityCfg)
     recording: RecordingCfg = field(default_factory=RecordingCfg)
+    service: ServiceCfg = field(default_factory=ServiceCfg)
     path: Path | None = None
 
     @property
@@ -208,3 +224,38 @@ def _validate(cfg: Config) -> None:
         cfg.activity.stream_mode = "continuous"
     if not cfg.audio.system_audio and not cfg.audio.microphone:
         cfg.audio.enabled = False
+    if cfg.service.mode not in ("service", "console"):
+        cfg.service.mode = "service"
+    if cfg.service.capture_scope not in ("active_console", "all_sessions"):
+        cfg.service.capture_scope = "active_console"
+
+
+# ---------------------------------------------------------------- agente
+
+# Seções entregues ao agente de captura. NUNCA inclui [auth] (senha do NVR) nem
+# credenciais: o agente publica no MediaMTX local (loopback, sem senha) e não
+# precisa de nada sigiloso. Assim o config.ini pode ficar legível só para admins.
+_AGENT_SECTIONS = ("device", "video", "audio", "activity")
+
+
+def agent_payload(cfg: Config) -> dict:
+    from dataclasses import asdict
+    data = {s: asdict(getattr(cfg, s)) for s in _AGENT_SECTIONS}
+    data["rtsp_port"] = cfg.network.rtsp_port
+    return data
+
+
+def config_from_agent_payload(data: dict) -> Config:
+    cfg = Config()
+    for section in _AGENT_SECTIONS:
+        obj = getattr(cfg, section)
+        for key, value in (data.get(section) or {}).items():
+            if hasattr(obj, key):
+                setattr(obj, key, value)
+    cfg.network.rtsp_port = int(data.get("rtsp_port", cfg.network.rtsp_port))
+    cfg.auth.enabled = False  # o agente não autentica; isso é tarefa do serviço
+    cfg.network.discovery = False
+    cfg.recording.enabled = False
+    cfg.service.mode = "console"
+    _validate(cfg)
+    return cfg

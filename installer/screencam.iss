@@ -3,7 +3,7 @@
 
 #define AppName "ScreenCam ONVIF"
 #ifndef AppVersion
-  #define AppVersion "1.1.0"
+  #define AppVersion "1.2.0"
 #endif
 #define AppExe "ScreenCamONVIF.exe"
 #define DataDir "{commonappdata}\ScreenCamONVIF"
@@ -33,7 +33,6 @@ MinVersion=10.0
 Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
 [Tasks]
-Name: "autostart"; Description: "Iniciar automaticamente no logon de qualquer usuario"
 Name: "firewall"; Description: "Liberar o programa no Firewall do Windows (ONVIF, RTSP e descoberta)"
 
 [Files]
@@ -45,25 +44,29 @@ Source: "config.template.ini"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 Name: "{#DataDir}"
-Name: "{#DataDir}\recordings"; Permissions: users-modify
+Name: "{#DataDir}\recordings"
+Name: "{#DataDir}\runtime"; Permissions: users-readexec
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{group}\Editar configuracao"; Filename: "{sys}\notepad.exe"; Parameters: """{#DataDir}\config.ini"""
+; Atalhos administrativos (o programa roda como servico; nao ha janela para o usuario comum)
+Name: "{group}\Estado do servico"; Filename: "{app}\{#AppExe}"; Parameters: "status"
+Name: "{group}\Editar configuracao (admin)"; Filename: "{sys}\notepad.exe"; Parameters: """{#DataDir}\config.ini"""
 Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
-
-[Registry]
-Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ScreenCamONVIF"; ValueData: """{app}\{#AppExe}"""; Flags: uninsdeletevalue; Tasks: autostart
 
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ScreenCam ONVIF"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ScreenCam ONVIF RTSP"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF"" dir=in action=allow program=""{app}\{#AppExe}"" enable=yes profile=any remoteip=localsubnet"; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF RTSP"" dir=in action=allow program=""{app}\mediamtx.exe"" enable=yes profile=any remoteip=localsubnet"; Flags: runhidden; Tasks: firewall
-Filename: "{app}\{#AppExe}"; Description: "Iniciar o {#AppName} agora"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; Trava o config.ini (contem a senha do NVR): apenas SYSTEM e Administradores leem
+Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}\config.ini"" /inheritance:r /grant:r ""*S-1-5-18:F"" ""*S-1-5-32-544:F"""; Flags: runhidden
+; Instala e inicia o servico (o usuario comum nao consegue para-lo)
+Filename: "{app}\{#AppExe}"; Parameters: "install-service"; Flags: runhidden waituntilterminated
+Filename: "{app}\{#AppExe}"; Parameters: "start"; Flags: runhidden waituntilterminated
+Filename: "{app}\{#AppExe}"; Parameters: "status"; Description: "Ver estado do servico"; Flags: postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExe}"; Flags: runhidden; RunOnceId: "KillApp"
+Filename: "{app}\{#AppExe}"; Parameters: "uninstall-service"; Flags: runhidden waituntilterminated; RunOnceId: "SvcRemove"
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM mediamtx.exe"; Flags: runhidden; RunOnceId: "KillMtx"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ScreenCam ONVIF"""; Flags: runhidden; RunOnceId: "Fw1"
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ScreenCam ONVIF RTSP"""; Flags: runhidden; RunOnceId: "Fw2"

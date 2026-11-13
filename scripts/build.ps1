@@ -56,6 +56,8 @@ Write-Host "==> PyInstaller"
 & $py -m PyInstaller --noconfirm --clean --windowed --name ScreenCamONVIF `
     --icon installer\icon.ico --paths src `
     --collect-data soundcard --hidden-import pystray._win32 `
+    --hidden-import win32timezone --hidden-import servicemanager `
+    --hidden-import win32service --hidden-import win32serviceutil --hidden-import win32event `
     scripts\launcher.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller falhou" }
 

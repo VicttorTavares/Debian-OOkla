@@ -9,6 +9,7 @@ import asyncio
 import base64
 import datetime as dt
 import hashlib
+import json
 import os
 import socket
 import sys
@@ -322,3 +323,161 @@ def test_encoder_args_h265():
     old.video.encoder, old.video.codec = "h264_nvenc", "H.264"
     _validate(old)
     assert (old.video.codec, old.video.encoder) == ("h264", "nvenc")
+
+
+# ---------------------------------------------------------------- serviço/agente
+
+def test_agent_payload_has_no_secrets():
+    from screencam.config import agent_payload, config_from_agent_payload
+    cfg = Config()
+    cfg.auth.username, cfg.auth.password = "admin", "senha-secreta-123"
+    cfg.video.codec, cfg.video.encoder = "h265", "nvenc"
+    cfg.network.rtsp_port = 9999
+    payload = agent_payload(cfg)
+    blob = json.dumps(payload)
+    assert "senha-secreta-123" not in blob and "auth" not in payload and "network" not in payload
+    assert payload["rtsp_port"] == 9999
+    agent_cfg = config_from_agent_payload(payload)
+    assert agent_cfg.video.codec == "h265" and agent_cfg.video.encoder == "nvenc"
+    assert agent_cfg.network.rtsp_port == 9999
+    assert agent_cfg.auth.enabled is False  # agente nunca autentica
+    assert agent_cfg.recording.enabled is False and agent_cfg.network.discovery is False
+
+
+def test_control_channel_aggregates_sessions():
+    from screencam.control import ActivityAggregator, ControlClient, ControlServer
+    changes = []
+    agg = ActivityAggregator(changes.append)
+    srv = ControlServer(0, "tok", agg, status_fn=lambda: {"ok": 1})
+    srv.start()
+    try:
+        ep = f"http://127.0.0.1:{srv.port}"
+        a = ControlClient(ep, "tok", "s1")
+        b = ControlClient(ep, "tok", "s2")
+        assert a.report_activity(True)
+        time.sleep(0.05)
+        assert changes == [True]
+        assert b.report_activity(True)
+        assert a.report_activity(False)
+        time.sleep(0.05)
+        assert changes == [True]  # s2 ainda ativo
+        assert b.report_activity(False)
+        time.sleep(0.05)
+        assert changes == [True, False]
+        assert set(agg.active_sessions()) == set()
+        # token inválido é rejeitado
+        assert ControlClient(ep, "errado", "s3").report_activity(True) is False
+    finally:
+        srv.stop()
+
+
+def test_control_session_ttl_sweep():
+    from screencam.control import ActivityAggregator
+    changes = []
+    clock = [1000.0]
+    agg = ActivityAggregator(changes.append)
+    # injeta heartbeat antigo manualmente
+    agg._sessions["morta"] = (True, 0.0)
+    agg._active = True
+    agg.sweep()  # time.monotonic() >> 0 + TTL -> remove e recomputa
+    assert changes == [False]
+    assert agg.active_sessions() == []
+
+
+def test_session_manager_active_console_follows_user():
+    from screencam.sessions import SessionInfo, SessionManager
+
+    class FakeAgent:
+        def __init__(self):
+            self.alive = True
+            self.killed = False
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            self.alive = False
+            self.killed = True
+
+    class Backend:
+        def __init__(self):
+            self.sessions = []
+            self.launched = []
+
+        def list_sessions(self):
+            return list(self.sessions)
+
+        def launch_agent(self, sid):
+            a = FakeAgent()
+            self.launched.append((sid, a))
+            return a
+
+    clock = [0.0]
+    b = Backend()
+    m = SessionManager(b, "active_console", respawn_backoff=3.0, clock=lambda: clock[0])
+
+    b.sessions = [SessionInfo(1, "joao", True, True)]
+    m.reconcile()
+    assert set(m._agents) == {1}
+
+    # troca de usuário: console passa para a sessão 2
+    b.sessions = [SessionInfo(1, "joao", False, True), SessionInfo(2, "maria", True, True)]
+    m.reconcile()
+    assert set(m._agents) == {2}
+    assert b.launched[0][1].killed is True
+
+    # usuário mata o agente -> só respawna após o backoff
+    m._agents[2].alive = False
+    m.reconcile()
+    assert len([s for s, _ in b.launched if s == 2]) == 1
+    clock[0] = 10.0
+    m.reconcile()
+    assert len([s for s, _ in b.launched if s == 2]) == 2
+    assert m._agents[2].is_alive()
+
+
+def test_session_manager_all_sessions_simultaneous():
+    from screencam.sessions import SessionInfo, SessionManager
+
+    class A:
+        def is_alive(self):
+            return True
+
+        def terminate(self):
+            pass
+
+    class Backend:
+        def list_sessions(self):
+            return [SessionInfo(3, "a", True, False), SessionInfo(4, "b", True, False),
+                    SessionInfo(5, "", True, True)]  # 5 sem usuário -> ignorada
+
+        def launch_agent(self, sid):
+            return A()
+
+    m = SessionManager(Backend(), "all_sessions")
+    m.reconcile()
+    assert set(m._agents) == {3, 4}
+
+
+def test_server_core_status_and_pause():
+    cfg = Config()
+    cfg.network.onvif_port = _free_port()
+    cfg.network.rtsp_port = _free_port()
+    cfg.network.discovery = False
+    cfg.service.control_port = 0
+    from screencam.app import ServerCore
+    core = ServerCore(cfg)
+    try:
+        # simula atividade reportada por uma sessão
+        core.aggregator.report("s1", True)
+        time.sleep(0.02)
+        assert core.broker.motion is True
+        st = core.status()
+        assert st["motion"] is True and st["active_sessions"] == ["s1"]
+        # pausa derruba o movimento mesmo com sessão ativa
+        core.set_paused(True)
+        assert core.broker.motion is False
+        core.set_paused(False)
+        assert core.broker.motion is True
+    finally:
+        core.broker.set_motion(False)

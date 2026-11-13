@@ -1,4 +1,16 @@
-"""Ponto de entrada: ``python -m screencam`` ou ScreenCamONVIF.exe."""
+"""Ponto de entrada. Subcomandos:
+
+    console           tudo em um processo (captura na sessão atual) — dev/uso simples
+    service-run       executado pelo Gerenciador de Serviços do Windows (SCM)
+    service-console   serviço + gerenciador de sessões em primeiro plano (depuração)
+    agent ...         agente de captura de uma sessão (lançado pelo serviço)
+    install-service   registra o serviço do Windows (requer admin)
+    uninstall-service remove o serviço
+    start | stop      inicia/para o serviço
+    status            estado do serviço
+
+Sem subcomando: inicia conforme ``[service] mode`` do config (service|console).
+"""
 from __future__ import annotations
 
 import argparse
@@ -11,16 +23,9 @@ from . import winapi
 from .config import APP_NAME, APP_VERSION, load_config
 
 
-def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog=APP_NAME, description="Transmite a tela como camera ONVIF")
-    parser.add_argument("-c", "--config", help="caminho do config.ini")
-    parser.add_argument("--headless", action="store_true", help="sem icone na bandeja")
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("--version", action="version", version=f"{APP_NAME} {APP_VERSION}")
-    args = parser.parse_args(argv)
-
-    from .app import ScreenCamApp, setup_logging
-    setup_logging(args.verbose)
+def _run_console(args) -> int:
+    from .app import ConsoleApp, setup_logging
+    setup_logging(args.verbose, component="console")
     log = logging.getLogger("screencam")
 
     if not winapi.single_instance(APP_NAME):
@@ -33,21 +38,34 @@ def main(argv=None) -> int:
     if cfg.auth.enabled and cfg.auth.password in ("admin", ""):
         log.warning("ATENCAO: senha padrao em uso. Altere [auth] password no config.ini.")
 
-    app = ScreenCamApp(cfg)
+    app = ConsoleApp(cfg)
     try:
         app.start()
     except OSError as exc:
         log.error("Falha ao iniciar (porta ONVIF %s em uso?): %s", cfg.network.onvif_port, exc)
         return 2
 
-    if winapi.IS_WINDOWS and not args.headless:
+    if winapi.IS_WINDOWS and cfg.service.visible_indicator and not args.headless:
         try:
             from .tray import run_tray
-            run_tray(app)  # bloqueia até "Sair"
+            run_tray(app)
             return 0
         except Exception:
             log.exception("Bandeja indisponivel; seguindo sem icone")
 
+    _wait_forever(app.stop)
+    return 0
+
+
+def _run_service_console(args) -> int:
+    from .app import setup_logging
+    from .service import run_service_console
+    setup_logging(args.verbose, component="service")
+    cfg = load_config(args.config)
+    return run_service_console(cfg)
+
+
+def _wait_forever(on_stop) -> None:
     done = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -58,8 +76,96 @@ def main(argv=None) -> int:
         while not done.wait(1):
             pass
     finally:
-        app.stop()
-    return 0
+        on_stop()
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(prog=APP_NAME, description="Tela+audio como camera ONVIF")
+    parser.add_argument("--version", action="version", version=f"{APP_NAME} {APP_VERSION}")
+    sub = parser.add_subparsers(dest="cmd")
+
+    def common(p):
+        p.add_argument("-c", "--config", help="caminho do config.ini")
+        p.add_argument("-v", "--verbose", action="store_true")
+
+    p_console = sub.add_parser("console", help="processo unico (captura na sessao atual)")
+    common(p_console)
+    p_console.add_argument("--headless", action="store_true")
+
+    for name in ("service-run", "service-console"):
+        common(sub.add_parser(name))
+
+    sub.add_parser("agent", add_help=False)  # argumentos próprios, tratados em agent.run_agent
+
+    for name in ("install-service", "uninstall-service", "start", "stop", "status"):
+        common(sub.add_parser(name))
+
+    # 'agent' precisa dos argumentos crus
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "agent":
+        from .agent import run_agent
+        return run_agent(argv[1:])
+
+    args = parser.parse_args(argv)
+
+    if args.cmd in (None, "console"):
+        if args.cmd is None:
+            args.headless = False
+            args.config = getattr(args, "config", None)
+            args.verbose = getattr(args, "verbose", False)
+            cfg = load_config(args.config)
+            if winapi.IS_WINDOWS and cfg.service.mode == "service":
+                print("Modo 'service': use 'install-service' e 'start'. "
+                      "Para rodar em primeiro plano use 'service-console' ou 'console'.")
+                return 0
+        return _run_console(args)
+
+    if args.cmd == "service-console":
+        return _run_service_console(args)
+
+    if args.cmd == "service-run":
+        from .service import service_dispatch
+        service_dispatch()
+        return 0
+
+    return _service_control(args.cmd, args)
+
+
+def _service_control(cmd: str, args) -> int:
+    if not winapi.IS_WINDOWS:
+        print("Comandos de servico sao exclusivos do Windows.")
+        return 1
+    from .service import install_service
+    try:
+        if cmd == "install-service":
+            install_service(args.config)
+            print("Agora inicie com: ScreenCamONVIF start")
+            return 0
+        import win32serviceutil
+        name = "ScreenCamONVIF"
+        if cmd == "uninstall-service":
+            win32serviceutil.StopService(name)
+            win32serviceutil.RemoveService(name)
+            print("Servico removido.")
+        elif cmd == "start":
+            win32serviceutil.StartService(name)
+            print("Servico iniciado.")
+        elif cmd == "stop":
+            win32serviceutil.StopService(name)
+            print("Servico parado.")
+        elif cmd == "status":
+            import win32service
+            state = win32serviceutil.QueryServiceStatus(name)[1]
+            names = {win32service.SERVICE_RUNNING: "em execucao",
+                     win32service.SERVICE_STOPPED: "parado",
+                     win32service.SERVICE_START_PENDING: "iniciando",
+                     win32service.SERVICE_STOP_PENDING: "parando"}
+            print(f"Servico {name}: {names.get(state, state)}")
+        return 0
+    except Exception as exc:
+        print(f"Falha no comando '{cmd}': {exc}")
+        return 1
 
 
 if __name__ == "__main__":
