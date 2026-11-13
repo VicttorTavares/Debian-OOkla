@@ -215,3 +215,110 @@ def test_activity_monitor_idle_cycle():
     time.sleep(0.5)
     assert changes == [True, False]
     mon.stop()
+
+
+# ---------------------------------------------------------------- H.265 / Media2
+
+def _soap(port, ns, body_xml, path="/onvif/media2_service"):
+    import xml.etree.ElementTree as ET
+    nonce = os.urandom(16)
+    created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    digest = base64.b64encode(hashlib.sha1(nonce + created.encode() + PASS.encode()).digest()).decode()
+    env = (f'<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:m="{ns}">'
+           f'<s:Header><Security xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">'
+           f'<UsernameToken><Username>{USER}</Username><Password Type="http://docs.oasis-open.org/wss/2004/01/'
+           f'oasis-200401-username-token-profile-1.0#PasswordDigest">{digest}</Password>'
+           f'<Nonce>{base64.b64encode(nonce).decode()}</Nonce>'
+           f'<Created xmlns="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+           f'{created}</Created></UsernameToken></Security></s:Header><s:Body>{body_xml}</s:Body></s:Envelope>')
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=env.encode(),
+                                 headers={"Content-Type": "application/soap+xml"})
+    return ET.fromstring(urllib.request.urlopen(req).read())
+
+
+TR2 = "http://www.onvif.org/ver20/media/wsdl"
+TT = "{http://www.onvif.org/ver10/schema}"
+
+
+def test_media2_reports_h265(server):
+    server.ctx.cfg.video.codec = "h265"
+    root = _soap(server.port, TR2, "<m:GetProfiles><m:Type>All</m:Type></m:GetProfiles>")
+    enc = root.find(f".//{{{TR2}}}VideoEncoder")
+    assert enc.findtext(f"{TT}Encoding") == "H265"
+    assert enc.get("GovLength") == str(server.ctx.cfg.gop_frames)
+    assert enc.find(f"{TT}Resolution/{TT}Width").text == "1920"
+    assert root.find(f".//{{{TR2}}}AudioEncoder/{TT}Encoding").text == "mpeg4-generic"
+    # filtro por tipo
+    root = _soap(server.port, TR2, "<m:GetProfiles><m:Type>VideoEncoder</m:Type></m:GetProfiles>")
+    assert root.find(f".//{{{TR2}}}VideoSource") is None and root.find(f".//{{{TR2}}}VideoEncoder") is not None
+    uri = _soap(server.port, TR2, "<m:GetStreamUri><m:Protocol>RtspUnicast</m:Protocol>"
+                                  "<m:ProfileToken>Profile_1</m:ProfileToken></m:GetStreamUri>")
+    assert uri.findtext(f".//{{{TR2}}}Uri").endswith(":8554/screen")
+    opts = _soap(server.port, TR2, "<m:GetVideoEncoderConfigurationOptions/>")
+    assert opts.findtext(f".//{TT}Encoding") == "H265"
+    for op in ("GetVideoEncoderConfigurations", "GetVideoSourceConfigurations", "GetAudioEncoderConfigurations",
+               "GetAudioSourceConfigurations", "GetServiceCapabilities", "GetSnapshotUri",
+               "GetVideoEncoderInstances", "GetAudioEncoderConfigurationOptions", "GetMetadataConfigurations"):
+        _soap(server.port, TR2, f"<m:{op}/>")
+    # Media1 continua respondendo (NVRs antigos), com valor válido no esquema ver10
+    m1 = _soap(server.port, "http://www.onvif.org/ver10/media/wsdl", "<m:GetProfiles/>", "/onvif/media_service")
+    assert m1.find(f".//{TT}VideoEncoderConfiguration/{TT}Encoding").text == "H264"
+
+
+def test_get_services_lists_media2(server):
+    async def run():
+        cam = _cam(server)
+        dev = await _devmgmt(cam)
+        services = await dev.GetServices({"IncludeCapability": False})
+        assert TR2 in {s.Namespace for s in services}
+        await cam.close()
+
+    async def _devmgmt(cam):
+        await cam.update_xaddrs()
+        return await cam.create_devicemgmt_service()
+    asyncio.run(run())
+
+
+def test_scopes_profile_t_only_with_h265():
+    cfg = Config()
+    cfg.video.codec = "h265"
+    assert "onvif://www.onvif.org/Profile/T" in scopes(cfg)
+    cfg.video.codec = "h264"
+    assert "onvif://www.onvif.org/Profile/T" not in scopes(cfg)
+
+
+def test_encoder_resolution_and_fallback(monkeypatch):
+    from screencam import encoders, winapi
+    monkeypatch.setattr(winapi, "IS_WINDOWS", True)
+    # GPU NVIDIA disponível -> hevc_nvenc
+    cfg = Config()
+    assert encoders.resolve_encoder(cfg, "ffmpeg", probe=lambda f, n: n in ("hevc_nvenc", "libx265")) == "hevc_nvenc"
+    assert (cfg.video.codec, cfg.video.encoder) == ("h265", "nvenc")
+    # sem GPU -> x265 na CPU
+    cfg = Config()
+    assert encoders.resolve_encoder(cfg, "ffmpeg", probe=lambda f, n: n.startswith("lib")) == "libx265"
+    # FFmpeg sem HEVC -> cai para H.264 e o ONVIF passa a informar H264
+    cfg = Config()
+    assert encoders.resolve_encoder(cfg, "ffmpeg", probe=lambda f, n: n == "libx264") == "libx264"
+    assert cfg.video.codec == "h264"
+    assert "onvif://www.onvif.org/Profile/T" not in scopes(cfg)
+
+
+def test_encoder_args_h265():
+    from screencam.config import _validate
+    from screencam.encoders import encoder_args
+    cfg = Config()
+    _validate(cfg)
+    cfg.video.encoder = "cpu"
+    a = encoder_args(cfg)
+    params = a[a.index("-x265-params") + 1]
+    assert a[a.index("-c:v") + 1] == "libx265"
+    assert "keyint=60" in params and "crf=28" in params and "repeat-headers=1" in params
+    cfg.video.encoder, cfg.video.rate_control = "nvenc", "cbr"
+    a = encoder_args(cfg)
+    assert a[a.index("-c:v") + 1] == "hevc_nvenc" and a[a.index("-rc") + 1] == "cbr"
+    # compatibilidade com config.ini da v1.0
+    old = Config()
+    old.video.encoder, old.video.codec = "h264_nvenc", "H.264"
+    _validate(old)
+    assert (old.video.codec, old.video.encoder) == ("h264", "nvenc")

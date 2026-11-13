@@ -103,9 +103,15 @@ class ScreenCamApp:
 
     # --------------------------------------------------------------
     def start(self):
-        g = self.publisher.geometry
-        log.info("%s %s iniciando - captura %dx%d -> %dx%d @ %d fps, audio=%s",
-                 APP_NAME, APP_VERSION, g.src_w, g.src_h, g.out_w, g.out_h, self.cfg.video.fps,
+        # define o codec efetivo antes do ONVIF responder ao NVR
+        try:
+            self.publisher.resolve_encoder()
+        except Exception as exc:
+            log.error("Falha ao selecionar encoder de video: %s", exc)
+        g, v = self.publisher.geometry, self.cfg.video
+        log.info("%s %s iniciando - captura %dx%d -> %dx%d @ %d fps, video=%s/%s %s, audio=%s",
+                 APP_NAME, APP_VERSION, g.src_w, g.src_h, g.out_w, g.out_h, v.fps,
+                 v.codec.upper(), v.encoder, v.rate_control.upper(),
                  self.cfg.audio.codec if self.cfg.audio.enabled else "desativado")
         self.mediamtx.start()
         if self.mixer:
@@ -114,6 +120,7 @@ class ScreenCamApp:
             self.publisher.start()
         self.onvif.start()
         if self.discovery:
+            self.discovery.scopes = " ".join(scopes(self.cfg))  # codec efetivo já definido
             try:
                 self.discovery.start()
             except OSError as exc:

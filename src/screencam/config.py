@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 APP_NAME = "ScreenCamONVIF"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 
 def program_data_dir() -> Path:
@@ -85,8 +85,12 @@ class VideoCfg:
     fps: int = 15
     max_width: int = 1920
     max_height: int = 1080
-    bitrate_kbps: int = 2000
-    encoder: str = "libx264"        # libx264 | h264_nvenc | h264_qsv | h264_amf
+    codec: str = "h265"             # h265 (menor armazenamento) | h264 (compatibilidade)
+    encoder: str = "auto"           # auto | cpu | nvenc | qsv | amf
+    rate_control: str = "vbr"       # vbr (qualidade constante, economiza disco) | cbr
+    quality: int = 0                # CRF/CQ; 0 = automatico (28 em H.265, 25 em H.264)
+    bitrate_kbps: int = 1500        # teto de bitrate (VBR) ou bitrate fixo (CBR)
+    gop_seconds: int = 4            # intervalo entre quadros-chave; maior = menos disco
     draw_mouse: bool = True
     overlay: bool = True
     overlay_text: str = "{computer} - {user}"
@@ -136,6 +140,10 @@ class Config:
         return expand(self.device.name)
 
     @property
+    def gop_frames(self) -> int:
+        return self.video.fps * self.video.gop_seconds
+
+    @property
     def overlay_text(self) -> str:
         return expand(self.video.overlay_text)
 
@@ -180,6 +188,20 @@ def _validate(cfg: Config) -> None:
     v.fps = max(1, min(60, v.fps))
     v.max_width = max(320, v.max_width)
     v.max_height = max(240, v.max_height)
+    v.codec = {"hevc": "h265", "h.265": "h265", "h.264": "h264", "avc": "h264"}.get(v.codec.lower(), v.codec.lower())
+    if v.codec not in ("h264", "h265"):
+        v.codec = "h265"
+    # compatibilidade com a v1.0 (encoder = libx264 / h264_nvenc ...)
+    legacy = {"libx264": "cpu", "libx265": "cpu", "h264_nvenc": "nvenc", "hevc_nvenc": "nvenc",
+              "h264_qsv": "qsv", "hevc_qsv": "qsv", "h264_amf": "amf", "hevc_amf": "amf"}
+    v.encoder = legacy.get(v.encoder.lower(), v.encoder.lower())
+    if v.encoder not in ("auto", "cpu", "nvenc", "qsv", "amf"):
+        v.encoder = "auto"
+    if v.rate_control not in ("vbr", "cbr"):
+        v.rate_control = "vbr"
+    v.gop_seconds = max(1, min(10, v.gop_seconds))
+    if not 0 <= v.quality <= 51:
+        v.quality = 0
     if cfg.audio.codec not in ("aac", "g711"):
         cfg.audio.codec = "aac"
     if cfg.activity.stream_mode not in ("continuous", "on_activity"):

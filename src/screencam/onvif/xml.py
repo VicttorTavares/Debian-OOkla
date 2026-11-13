@@ -8,6 +8,7 @@ NS = {
     "s": "http://www.w3.org/2003/05/soap-envelope",
     "tds": "http://www.onvif.org/ver10/device/wsdl",
     "trt": "http://www.onvif.org/ver10/media/wsdl",
+    "tr2": "http://www.onvif.org/ver20/media/wsdl",
     "tev": "http://www.onvif.org/ver10/events/wsdl",
     "tt": "http://www.onvif.org/ver10/schema",
     "wsnt": "http://docs.oasis-open.org/wsn/b-2",

@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import winapi
 from .config import Config, user_runtime_dir
+from .encoders import encoder_args, resolve_encoder
 
 log = logging.getLogger(__name__)
 
@@ -101,18 +102,8 @@ def build_ffmpeg_cmd(cfg: Config, geo: VideoGeometry, rtsp_url: str, ffmpeg: str
         cmd += ["-map", "1:a"]
     cmd += ["-vf", ",".join(filters)]
 
-    # ---- encoder de vídeo (H.264, GOP de 2 s para o NVR sincronizar rápido)
-    gop = str(v.fps * 2)
-    br = f"{v.bitrate_kbps}k"
-    if v.encoder == "libx264":
-        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-                "-profile:v", "main", "-sc_threshold", "0"]
-    else:
-        cmd += ["-c:v", v.encoder]
-        if v.encoder == "h264_nvenc":
-            cmd += ["-preset", "p4", "-tune", "ll", "-profile:v", "main"]
-    cmd += ["-g", gop, "-keyint_min", gop, "-b:v", br, "-maxrate", br,
-            "-bufsize", f"{v.bitrate_kbps * 2}k", "-r", str(v.fps)]
+    # ---- encoder de vídeo (H.265/H.264, GOP de 2 s para o NVR sincronizar rápido)
+    cmd += encoder_args(cfg)
 
     # ---- encoder de áudio
     if a.enabled:
@@ -317,6 +308,13 @@ class FFmpegPublisher(_ManagedProcess):
         self.cfg = cfg
         self.mixer = mixer
         self.geometry = compute_geometry(cfg)
+        self._encoder_resolved = False
+
+    def resolve_encoder(self) -> str:
+        """Escolhe o encoder (GPU/CPU, H.265/H.264) uma única vez, antes de publicar."""
+        name = resolve_encoder(self.cfg, find_binary("ffmpeg"))
+        self._encoder_resolved = True
+        return name
 
     @property
     def local_url(self) -> str:
@@ -328,6 +326,8 @@ class FFmpegPublisher(_ManagedProcess):
             log.warning("Sobreposicao de texto desativada (fonte indisponivel no FFmpeg): %s", self.last_error)
             self.cfg.video.overlay = False
         self.last_error = ""
+        if not self._encoder_resolved:
+            self.resolve_encoder()
         self.geometry = compute_geometry(self.cfg)
         cmd = build_ffmpeg_cmd(self.cfg, self.geometry, self.local_url, find_binary("ffmpeg"))
         log.info("Iniciando FFmpeg: %s", " ".join(cmd))

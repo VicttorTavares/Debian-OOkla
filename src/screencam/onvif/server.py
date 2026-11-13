@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 NS_DEVICE = X.NS["tds"]
 NS_MEDIA = X.NS["trt"]
+NS_MEDIA2 = X.NS["tr2"]
 NS_EVENTS = X.NS["tev"]
 NS_WSNT = X.NS["wsnt"]
 NS_WSA = X.NS["wsa"]
@@ -49,6 +50,8 @@ def scopes(cfg: Config) -> list[str]:
              f"onvif://www.onvif.org/location/{q(cfg.device.location)}"]
     if cfg.audio.enabled:
         items.insert(2, "onvif://www.onvif.org/type/audio_encoder")
+    if cfg.video.codec == "h265":
+        items.insert(1, "onvif://www.onvif.org/Profile/T")  # NVRs usam para habilitar Media2/H.265
     return items
 
 
@@ -89,13 +92,15 @@ _MULTICAST = ("<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>
 def _vec(ctx: OnvifContext, tag: str) -> str:
     g, v = ctx.geometry_fn(), ctx.cfg.video
     return (f'<{tag} token="{VEC}"><tt:Name>{VEC}</tt:Name><tt:UseCount>1</tt:UseCount>'
+            # Media1 só conhece JPEG/MPEG4/H264 no esquema. Com H.265 ativo o NVR deve usar o
+            # Media2 (que informa H265); NVRs que só falam Media1 leem o codec real do SDP do RTSP.
             f"<tt:Encoding>H264</tt:Encoding>"
             f"<tt:Resolution><tt:Width>{g.out_w}</tt:Width><tt:Height>{g.out_h}</tt:Height></tt:Resolution>"
             f"<tt:Quality>5</tt:Quality>"
             f"<tt:RateControl><tt:FrameRateLimit>{v.fps}</tt:FrameRateLimit>"
             f"<tt:EncodingInterval>1</tt:EncodingInterval><tt:BitrateLimit>{v.bitrate_kbps}</tt:BitrateLimit>"
             f"</tt:RateControl>"
-            f"<tt:H264><tt:GovLength>{v.fps * 2}</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>"
+            f"<tt:H264><tt:GovLength>{ctx.cfg.gop_frames}</tt:GovLength><tt:H264Profile>Main</tt:H264Profile></tt:H264>"
             f"{_MULTICAST}</{tag}>")
 
 
@@ -154,6 +159,12 @@ _MEDIA_CAPS = ('<trt:Capabilities SnapshotUri="true" Rotation="false" VideoSourc
                '<trt:ProfileCapabilities MaximumNumberOfProfiles="1"/>'
                '<trt:StreamingCapabilities RTPMulticast="false" RTP_TCP="true" RTP_RTSP_TCP="true" '
                'NonAggregateControl="false" NoRTSPStreaming="false"/></trt:Capabilities>')
+_MEDIA2_CAPS = ('<tr2:Capabilities SnapshotUri="true" Rotation="false" VideoSourceMode="false" OSD="false" '
+                'TemporaryOSDText="false" Mask="false" SourceMask="false">'
+                '<tr2:ProfileCapabilities MaximumNumberOfProfiles="1" '
+                'ConfigurationsSupported="VideoSource VideoEncoder AudioSource AudioEncoder"/>'
+                '<tr2:StreamingCapabilities RTSPStreaming="true" RTPMulticast="false" RTP_RTSP_TCP="true" '
+                'NonAggregateControl="false" AutoStartMulticast="false"/></tr2:Capabilities>')
 _EVENTS_CAPS = ('<tev:Capabilities WSSubscriptionPolicySupport="false" WSPullPointSupport="true" '
                 'WSPausableSubscriptionManagerInterfaceSupport="false" MaxNotificationProducers="10" '
                 'MaxPullPoints="10" PersistentNotificationStorage="false"/>')
@@ -351,6 +362,7 @@ def d_GetServices(h: Handler, op):
     out = []
     for ns, path, caps in ((NS_DEVICE, "device_service", _DEVICE_CAPS),
                            (NS_MEDIA, "media_service", _MEDIA_CAPS),
+                           (NS_MEDIA2, "media2_service", _MEDIA2_CAPS),
                            (NS_EVENTS, "events_service", _EVENTS_CAPS)):
         cap = ""
         if incl:
@@ -518,7 +530,7 @@ def m_GetVideoEncoderConfigurationOptions(h, op):
             "<tt:QualityRange><tt:Min>0</tt:Min><tt:Max>10</tt:Max></tt:QualityRange>"
             "<tt:H264>"
             f"<tt:ResolutionsAvailable><tt:Width>{g.out_w}</tt:Width><tt:Height>{g.out_h}</tt:Height></tt:ResolutionsAvailable>"
-            f"<tt:GovLengthRange><tt:Min>{v.fps * 2}</tt:Min><tt:Max>{v.fps * 2}</tt:Max></tt:GovLengthRange>"
+            f"<tt:GovLengthRange><tt:Min>{h.cfg.gop_frames}</tt:Min><tt:Max>{h.cfg.gop_frames}</tt:Max></tt:GovLengthRange>"
             f"<tt:FrameRateRange><tt:Min>1</tt:Min><tt:Max>{v.fps}</tt:Max></tt:FrameRateRange>"
             "<tt:EncodingIntervalRange><tt:Min>1</tt:Min><tt:Max>1</tt:Max></tt:EncodingIntervalRange>"
             "<tt:H264ProfilesSupported>Main</tt:H264ProfilesSupported>"
@@ -553,6 +565,149 @@ def m_GetAudioSourceConfigurationOptions(h, op):
 def m_GetGuaranteedNumberOfVideoEncoderInstances(h, op):
     return ("<trt:GetGuaranteedNumberOfVideoEncoderInstancesResponse><trt:TotalNumber>1</trt:TotalNumber>"
             "<trt:H264>1</trt:H264></trt:GetGuaranteedNumberOfVideoEncoderInstancesResponse>")
+
+
+# ======================================================================
+# Media2 service (ver20) — necessário para anunciar H.265 ao NVR
+# ======================================================================
+
+def _codec_name(cfg: Config) -> str:
+    return "H265" if cfg.video.codec == "h265" else "H264"
+
+
+def _vec2(ctx: OnvifContext, tag: str) -> str:
+    g, v = ctx.geometry_fn(), ctx.cfg.video
+    cbr = "true" if v.rate_control == "cbr" else "false"
+    return (f'<{tag} token="{VEC}" GovLength="{ctx.cfg.gop_frames}" Profile="Main">'
+            f"<tt:Name>{VEC}</tt:Name><tt:UseCount>1</tt:UseCount>"
+            f"<tt:Encoding>{_codec_name(ctx.cfg)}</tt:Encoding>"
+            f"<tt:Resolution><tt:Width>{g.out_w}</tt:Width><tt:Height>{g.out_h}</tt:Height></tt:Resolution>"
+            f'<tt:RateControl ConstantBitRate="{cbr}"><tt:FrameRateLimit>{v.fps}</tt:FrameRateLimit>'
+            f"<tt:BitrateLimit>{v.bitrate_kbps}</tt:BitrateLimit></tt:RateControl>"
+            "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address>"
+            "</tt:Address><tt:Port>0</tt:Port><tt:TTL>1</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>"
+            f"<tt:Quality>5</tt:Quality></{tag}>")
+
+
+def _audio2_params(cfg: Config) -> tuple[str, int, int]:
+    if cfg.audio.codec == "g711":
+        return "PCMU", 64, 8
+    return "mpeg4-generic", cfg.audio.bitrate_kbps, 48
+
+
+def _aec2(ctx: OnvifContext, tag: str) -> str:
+    enc, br, sr = _audio2_params(ctx.cfg)
+    return (f'<{tag} token="{AEC}"><tt:Name>{AEC}</tt:Name><tt:UseCount>1</tt:UseCount>'
+            f"<tt:Encoding>{enc}</tt:Encoding>"
+            "<tt:Multicast><tt:Address><tt:Type>IPv4</tt:Type><tt:IPv4Address>0.0.0.0</tt:IPv4Address>"
+            "</tt:Address><tt:Port>0</tt:Port><tt:TTL>1</tt:TTL><tt:AutoStart>false</tt:AutoStart></tt:Multicast>"
+            f"<tt:Bitrate>{br}</tt:Bitrate><tt:SampleRate>{sr}</tt:SampleRate></{tag}>")
+
+
+_M2_TYPES = {"VideoSource", "AudioSource", "VideoEncoder", "AudioEncoder"}
+
+
+def _requested_types(op) -> set[str]:
+    types = set()
+    for el in op:
+        if el.tag.endswith("}Type") or el.tag == "Type":
+            types.update((el.text or "").split())
+    if not types or "All" in types:
+        return set(_M2_TYPES)
+    return types & _M2_TYPES
+
+
+def _profile2(ctx: OnvifContext, types: set[str]) -> str:
+    audio = ctx.cfg.audio.enabled
+    parts = []
+    if "VideoSource" in types:
+        parts.append(_vsc(ctx, "tr2:VideoSource"))
+    if "AudioSource" in types and audio:
+        parts.append(_asc("tr2:AudioSource"))
+    if "VideoEncoder" in types:
+        parts.append(_vec2(ctx, "tr2:VideoEncoder"))
+    if "AudioEncoder" in types and audio:
+        parts.append(_aec2(ctx, "tr2:AudioEncoder"))
+    conf = f"<tr2:Configurations>{''.join(parts)}</tr2:Configurations>" if parts else ""
+    return f'<tr2:Profiles token="{PROFILE}" fixed="true"><tr2:Name>MainStream</tr2:Name>{conf}</tr2:Profiles>'
+
+
+def m2_GetServiceCapabilities(h, op):
+    return f"<tr2:GetServiceCapabilitiesResponse>{_MEDIA2_CAPS}</tr2:GetServiceCapabilitiesResponse>"
+
+
+def m2_GetProfiles(h, op):
+    token = _txt(op, "Token")
+    if token and token != PROFILE:
+        raise SoapFault(400, "Sender", "ter:InvalidArgVal", "Perfil inexistente")
+    return f"<tr2:GetProfilesResponse>{_profile2(h.ctx, _requested_types(op))}</tr2:GetProfilesResponse>"
+
+
+def _m2_configs(name: str, builder, needs_audio=False):
+    def fn(h, op):
+        _need_profile(op)
+        t = _txt(op, "ConfigurationToken")
+        body = "" if (needs_audio and not h.cfg.audio.enabled) else builder(h, "tr2:Configurations")
+        if t and body and f'token="{t}"' not in body:
+            raise SoapFault(400, "Sender", "ter:InvalidArgVal", "Configuracao inexistente")
+        return f"<tr2:{name}Response>{body}</tr2:{name}Response>"
+    return fn
+
+
+def m2_GetStreamUri(h, op):
+    _need_profile(op)
+    uri = f"rtsp://{h._host()}:{h.cfg.network.rtsp_port}/screen"
+    return f"<tr2:GetStreamUriResponse><tr2:Uri>{uri}</tr2:Uri></tr2:GetStreamUriResponse>"
+
+
+def m2_GetSnapshotUri(h, op):
+    _need_profile(op)
+    return f"<tr2:GetSnapshotUriResponse><tr2:Uri>{h.base()}/onvif/snapshot.jpg</tr2:Uri></tr2:GetSnapshotUriResponse>"
+
+
+def m2_GetVideoEncoderConfigurationOptions(h, op):
+    g, v = h.ctx.geometry_fn(), h.cfg.video
+    return ("<tr2:GetVideoEncoderConfigurationOptionsResponse>"
+            f'<tr2:Options GovLengthRange="{h.cfg.gop_frames} {h.cfg.gop_frames}" FrameRatesSupported="{v.fps}" '
+            f'ProfilesSupported="Main" ConstantBitRateSupported="true">'
+            f"<tt:Encoding>{_codec_name(h.cfg)}</tt:Encoding>"
+            "<tt:QualityRange><tt:Min>0</tt:Min><tt:Max>10</tt:Max></tt:QualityRange>"
+            f"<tt:ResolutionsAvailable><tt:Width>{g.out_w}</tt:Width><tt:Height>{g.out_h}</tt:Height></tt:ResolutionsAvailable>"
+            f"<tt:BitrateRange><tt:Min>64</tt:Min><tt:Max>{max(64, v.bitrate_kbps)}</tt:Max></tt:BitrateRange>"
+            "</tr2:Options></tr2:GetVideoEncoderConfigurationOptionsResponse>")
+
+
+def m2_GetAudioEncoderConfigurationOptions(h, op):
+    if not h.cfg.audio.enabled:
+        return "<tr2:GetAudioEncoderConfigurationOptionsResponse/>"
+    enc, br, sr = _audio2_params(h.cfg)
+    return ("<tr2:GetAudioEncoderConfigurationOptionsResponse><tr2:Options>"
+            f"<tt:Encoding>{enc}</tt:Encoding><tt:BitrateList><tt:Items>{br}</tt:Items></tt:BitrateList>"
+            f"<tt:SampleRateList><tt:Items>{sr}</tt:Items></tt:SampleRateList>"
+            "</tr2:Options></tr2:GetAudioEncoderConfigurationOptionsResponse>")
+
+
+def m2_GetVideoSourceConfigurationOptions(h, op):
+    g = h.ctx.geometry_fn()
+    rng = lambda a, b: f"<tt:Min>{a}</tt:Min><tt:Max>{b}</tt:Max>"  # noqa: E731
+    return ("<tr2:GetVideoSourceConfigurationOptionsResponse><tr2:Options><tt:BoundsRange>"
+            f"<tt:XRange>{rng(0, 0)}</tt:XRange><tt:YRange>{rng(0, 0)}</tt:YRange>"
+            f"<tt:WidthRange>{rng(g.out_w, g.out_w)}</tt:WidthRange>"
+            f"<tt:HeightRange>{rng(g.out_h, g.out_h)}</tt:HeightRange></tt:BoundsRange>"
+            f"<tt:VideoSourceTokensAvailable>{VS}</tt:VideoSourceTokensAvailable>"
+            "</tr2:Options></tr2:GetVideoSourceConfigurationOptionsResponse>")
+
+
+def m2_GetAudioSourceConfigurationOptions(h, op):
+    return ("<tr2:GetAudioSourceConfigurationOptionsResponse><tr2:Options>"
+            f"<tt:InputTokensAvailable>{AS}</tt:InputTokensAvailable>"
+            "</tr2:Options></tr2:GetAudioSourceConfigurationOptionsResponse>")
+
+
+def m2_GetVideoEncoderInstances(h, op):
+    return ("<tr2:GetVideoEncoderInstancesResponse><tr2:Info>"
+            f'<tr2:Codec><tr2:Encoding>{_codec_name(h.cfg)}</tr2:Encoding><tr2:Number>1</tr2:Number></tr2:Codec>'
+            "<tr2:Total>1</tr2:Total></tr2:Info></tr2:GetVideoEncoderInstancesResponse>")
 
 
 # ======================================================================
@@ -673,10 +828,18 @@ def _register(ns: str, prefix: str):
 
 _register(NS_DEVICE, "d_")
 _register(NS_MEDIA, "m_")
+_register(NS_MEDIA2, "m2_")
 _register(NS_EVENTS, "e_")
 _register(NS_WSNT, "n_")
 
+_b_vec2 = lambda h, tag: _vec2(h.ctx, tag)  # noqa: E731
+_b_aec2 = lambda h, tag: _aec2(h.ctx, tag)  # noqa: E731
+
 DISPATCH.update({
+    (NS_MEDIA2, "GetVideoSourceConfigurations"): _m2_configs("GetVideoSourceConfigurations", _b_vsc),
+    (NS_MEDIA2, "GetVideoEncoderConfigurations"): _m2_configs("GetVideoEncoderConfigurations", _b_vec2),
+    (NS_MEDIA2, "GetAudioSourceConfigurations"): _m2_configs("GetAudioSourceConfigurations", _b_asc, True),
+    (NS_MEDIA2, "GetAudioEncoderConfigurations"): _m2_configs("GetAudioEncoderConfigurations", _b_aec2, True),
     (NS_MEDIA, "GetVideoSourceConfigurations"): _cfg_list("GetVideoSourceConfigurations", _b_vsc),
     (NS_MEDIA, "GetVideoEncoderConfigurations"): _cfg_list("GetVideoEncoderConfigurations", _b_vec),
     (NS_MEDIA, "GetAudioSourceConfigurations"): _cfg_list("GetAudioSourceConfigurations", _b_asc, _audio_on),
@@ -696,9 +859,11 @@ _EMPTY_LIST_OPS = {
                "GetAudioOutputConfigurations", "GetAudioDecoderConfigurations",
                "GetCompatibleMetadataConfigurations", "GetCompatibleVideoAnalyticsConfigurations",
                "GetCompatibleAudioOutputConfigurations", "GetCompatibleAudioDecoderConfigurations", "GetOSDs"},
+    NS_MEDIA2: {"GetMetadataConfigurations", "GetAnalyticsConfigurations", "GetAudioOutputConfigurations",
+                "GetAudioDecoderConfigurations", "GetOSDs", "GetMasks", "GetVideoSourceModes"},
     NS_DEVICE: {"GetRelayOutputs", "GetDigitalInputs"},
 }
-_PREFIX = {NS_DEVICE: "tds", NS_MEDIA: "trt"}
+_PREFIX = {NS_DEVICE: "tds", NS_MEDIA: "trt", NS_MEDIA2: "tr2"}
 
 
 def _generic_handler(ns: str, name: str):

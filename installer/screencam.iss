@@ -3,7 +3,7 @@
 
 #define AppName "ScreenCam ONVIF"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 #define AppExe "ScreenCamONVIF.exe"
 #define DataDir "{commonappdata}\ScreenCamONVIF"
