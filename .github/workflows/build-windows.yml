@@ -64,11 +64,27 @@ jobs:
         run: |
           $exe = (Get-ChildItem setup -Filter *.exe | Select-Object -First 1).FullName
           Write-Host "Instalador: $exe"
-          $p = Start-Process -FilePath $exe -Wait -PassThru -ArgumentList @(
+          $p = Start-Process -FilePath $exe -PassThru -ArgumentList @(
             '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=$PWD\install.log",
             '/NVRIP=192.168.25.200','/USER=admin',"/PASS=$env:TEST_PASS",'/ONVIFPORT=80')
+          $limite = (Get-Date).AddSeconds(240)
+          $ultimo = 0
+          while (-not $p.HasExited -and (Get-Date) -lt $limite) {
+            Start-Sleep -Seconds 10
+            if (Test-Path install.log) {
+              $linhas = @(Get-Content install.log)
+              if ($linhas.Count -gt $ultimo) { $linhas[$ultimo..($linhas.Count-1)] | ForEach-Object { Write-Host "  | $_" }; $ultimo = $linhas.Count }
+            }
+          }
+          if (-not $p.HasExited) {
+            Write-Host "[FALHA] o instalador travou (240 s). Processos em execucao:"
+            Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'ScreenCam|mediamtx|ffmpeg|unins|Setup|sc.exe|icacls|netsh|taskkill' } |
+              Select-Object Name, ProcessId, ParentProcessId, CommandLine | Format-List | Out-String -Width 250 | Write-Host
+            Get-Service ScreenCamONVIF -ErrorAction SilentlyContinue | Format-List * | Out-String | Write-Host
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            exit 1
+          }
           Write-Host "Codigo de saida do instalador: $($p.ExitCode)"
-          Get-Content install.log -Tail 80
           if ($p.ExitCode -ne 0) { exit 1 }
       - name: Verificar instalacao (Windows PowerShell 5.1)
         shell: powershell
