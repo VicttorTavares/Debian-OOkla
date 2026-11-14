@@ -125,11 +125,18 @@ em qualquer câmera ONVIF.
   *Fabricante: ONVIF*, porta **8000**. Em *Evento → Detecção de Movimento* marque o canal e
   ligue a gravação por movimento na agenda. H.265 é aceito nos modelos atuais; nos antigos,
   use `codec = h264`. Áudio: *Codec de Áudio* no canal; se não tocar, `codec = g711`.
-- **Hikvision** (DS-7xxx/iDS, Hik-Connect): *Configuração → Câmera → adicionar* com
-  *Protocolo: ONVIF*, porta **8000**. O Hikvision lê o codec pelo Media2 (H.265 ok).
-  Ative *Evento → Evento Básico → Detecção de Movimento* no canal e, na agenda de gravação,
-  selecione *Evento/Movimento*. Dica: se os eventos ONVIF não chegarem, confirme que o
-  usuário ONVIF criado no NVR tem permissão de evento e que data/hora do PC e do NVR batem.
+- **Hikvision** (DS-7xxx/iDS, Hik-Connect): *Configuração → Sistema → Gerenciamento de câmera
+  → Adição personalizada (Custom Add)* → *Protocolo: ONVIF*, **IP do PC**, porta **8000**,
+  usuário/senha da instalação. **Não** dependa do *Quick Add*/SADP (busca por broadcast, que
+  não cruza sub-redes). O Hikvision lê o codec pelo Media2 (H.265 ok). Ative *Evento → Evento
+  Básico → Detecção de Movimento* no canal e, na agenda, selecione *Evento/Movimento*.
+  Cuidados típicos do Hikvision:
+  - **Data/hora** do PC e do NVR precisam bater (o ONVIF digest falha se o relógio divergir).
+  - **Senha** forte (daí a exigência de 10 caracteres); o usuário ONVIF precisa de permissão de evento.
+  - O Hikvision **não** usa a tela "End. servidor / ID dispositivo" (isso é Intelbras/Dahua).
+    Para câmera atrás de NAT, o equivalente Hikvision é o **ISUP/EHome** (registro numa
+    plataforma), um protocolo diferente e mais complexo — o "registro ativo" experimental deste
+    programa **não** fala ISUP. Entre sub-redes **roteadas**, use a adição manual por IP acima.
 
 > Em ambos, se o NVR só gravar "contínuo", ele ainda grava — mas sem a economia do gatilho
 > por movimento. Vale conferir se o canal está em modo *Evento*.
@@ -162,6 +169,10 @@ o enquadramento exato do handshake varia por modelo de NVR; o transporte (conect
 repassar os dados) está implementado e testado, mas pode ser preciso ajustar o preâmbulo para o
 seu gravador. Se precisar, uma **captura de pacotes** (Wireshark) de uma câmera Intelbras real
 registrando-se no seu NVR permite acertar o formato — me envie que eu ajusto.
+
+> **Hikvision:** esse modelo é do Intelbras/Dahua. O Hikvision não tem "End. servidor"; para
+> câmera atrás de NAT ele usa **ISUP/EHome** (registro em plataforma), não suportado aqui. Com
+> Hikvision, prefira a **adição manual por IP** (porta 8000) quando as redes forem roteadas.
 
 > Dica de diagnóstico: `ScreenCamONVIF.exe status` mostra o NVR autorizado e o estado do
 > registro ativo; os logs em `C:\ProgramData\ScreenCamONVIF\logs` registram cada tentativa.
