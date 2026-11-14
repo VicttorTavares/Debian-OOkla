@@ -824,3 +824,12 @@ def test_session_manager_exponential_backoff_and_exit_code(caplog):
     # backoff dobra (3s, 6s, 12s...): bem menos lancamentos que um a cada ciclo
     assert b.launches == 3, b.launches
     assert any("0xC0000142" in r.message for r in caplog.records)
+
+
+def test_ffmpeg_cmd_has_no_fragile_input_options():
+    """-thread_queue_size foi rejeitado como opcao de entrada pelo FFmpeg novo (Windows real)."""
+    from screencam.streamer import VideoGeometry, build_ffmpeg_cmd
+    cfg = Config()
+    cmd = build_ffmpeg_cmd(cfg, VideoGeometry(0, 0, 1920, 1080, 1920, 1080), "rtsp://127.0.0.1:8554/screen")
+    assert "-thread_queue_size" not in cmd
+    assert cmd[cmd.index("-f") + 1] == "gdigrab" and "pipe:0" in cmd

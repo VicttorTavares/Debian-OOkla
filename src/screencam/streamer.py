@@ -81,7 +81,9 @@ def build_ffmpeg_cmd(cfg: Config, geo: VideoGeometry, rtsp_url: str, ffmpeg: str
         cmd += ["-re", "-f", "lavfi", "-i",
                 f"testsrc2=size={geo.src_w}x{geo.src_h}:rate={v.fps}"]
     else:
-        cmd += ["-thread_queue_size", "512", "-f", "gdigrab",
+        # Sem -thread_queue_size: nas versoes novas do FFmpeg ele passou a ser opcao de SAIDA e
+        # fazia o gdigrab falhar ("cannot be applied to input url desktop").
+        cmd += ["-f", "gdigrab",
                 "-framerate", str(v.fps),
                 "-draw_mouse", "1" if v.draw_mouse else "0",
                 "-offset_x", str(geo.src_x), "-offset_y", str(geo.src_y),
@@ -90,7 +92,7 @@ def build_ffmpeg_cmd(cfg: Config, geo: VideoGeometry, rtsp_url: str, ffmpeg: str
 
     # ---- entrada de áudio (PCM vindo do mixer via stdin)
     if a.enabled:
-        cmd += ["-thread_queue_size", "1024", "-f", "s16le", "-ar", "48000", "-ch_layout", "stereo", "-i", "pipe:0"]
+        cmd += ["-f", "s16le", "-ar", "48000", "-ch_layout", "stereo", "-i", "pipe:0"]
 
     # ---- filtros de vídeo
     filters = []

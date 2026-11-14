@@ -178,7 +178,7 @@ if (-not $Installer) {
 Step "8. Verificacao de ponta a ponta"
 if (Test-Path $verify) {
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verify `
-        -User $User -Password $Password -AppDir $appDir 2>&1 | ForEach-Object { Log "$_" }
+        -User $User -Password $Password -AppDir $appDir -RequireStream 2>&1 | ForEach-Object { Log "$_" }
     $ok = ($LASTEXITCODE -eq 0)
     $statusFile = Join-Path $env:ProgramData "ScreenCamONVIF\runtime\status.json"
     if (Test-Path $statusFile) { try { $OnvifPort = [int]((Get-Content $statusFile -Raw | ConvertFrom-Json).onvif_port) } catch { } }
