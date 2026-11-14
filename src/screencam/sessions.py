@@ -53,6 +53,8 @@ class SessionManager:
         self._clock = clock
         self._agents: dict[int, AgentHandle] = {}
         self._next_allowed: dict[int, float] = {}  # sid -> quando pode relançar (backoff)
+        self._started_at: dict[int, float] = {}    # sid -> quando o agente atual foi lancado
+        self._fails: dict[int, int] = {}           # sid -> mortes rapidas consecutivas
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -85,9 +87,17 @@ class SessionManager:
             handle = self._agents.get(sid)
             if handle is not None and handle.is_alive():
                 continue
-            if handle is not None:  # morreu (usuário encerrou?) -> respawn com backoff
+            if handle is not None:  # morreu (usuário encerrou? falha ao iniciar?) -> respawn com backoff
                 self._agents.pop(sid, None)
-                log.warning("Agente da sessão %s nao esta mais ativo; sera reiniciado", sid)
+                lived = now - self._started_at.get(sid, now)
+                code = getattr(handle, "exit_code", None)
+                self._fails[sid] = (self._fails.get(sid, 0) + 1) if lived < 30 else 1
+                backoff = min(60.0, self.respawn_backoff * 2 ** (self._fails[sid] - 1))
+                self._next_allowed[sid] = max(self._next_allowed.get(sid, 0), now + backoff)
+                log.warning("Agente da sessão %s encerrou apos %.0fs%s; novo inicio em %.0fs (falhas seguidas: %d). "
+                            "Veja agente-sessao-%s.log em ProgramData\\ScreenCamONVIF\\logs",
+                            sid, lived, f" (codigo de saida 0x{code & 0xFFFFFFFF:08X})" if code is not None else "",
+                            backoff, self._fails[sid], sid)
             if now < self._next_allowed.get(sid, 0):
                 continue
             self._next_allowed[sid] = now + self.respawn_backoff
@@ -98,11 +108,14 @@ class SessionManager:
                 new = None
             if new is not None:
                 self._agents[sid] = new
+                self._started_at[sid] = now
                 log.info("Agente de captura iniciado na sessão %s", sid)
 
     def _kill(self, sid: int) -> None:
         handle = self._agents.pop(sid, None)
         self._next_allowed.pop(sid, None)
+        self._started_at.pop(sid, None)
+        self._fails.pop(sid, None)
         if handle is not None:
             try:
                 handle.terminate()
@@ -167,6 +180,46 @@ def make_windows_backend(agent_argv_fn):
         _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
                     ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
 
+    # Assinaturas explicitas: sem elas o ctypes trata HANDLE como int de 32 bits
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+
+    class SECURITY_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("nLength", wintypes.DWORD), ("lpSecurityDescriptor", wintypes.LPVOID),
+                    ("bInheritHandle", wintypes.BOOL)]
+
+    kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                     ctypes.POINTER(SECURITY_ATTRIBUTES), wintypes.DWORD,
+                                     wintypes.DWORD, wintypes.HANDLE]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+
+    FILE_APPEND_DATA = 0x00000004
+    FILE_SHARE_READ_WRITE = 0x00000003
+    OPEN_ALWAYS = 4
+    STARTF_USESTDHANDLES = 0x00000100
+    INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+    def _open_agent_log(sid: int):
+        """Arquivo (ProgramData\\...\\logs) que recebe stdout/stderr do agente: captura ate
+        falhas muito precoces (import, DLL), que nao chegam a criar o log normal do agente."""
+        from .config import program_data_dir
+        try:
+            d = program_data_dir() / "logs"
+            d.mkdir(parents=True, exist_ok=True)
+            path = d / f"agente-sessao-{sid}.log"
+            if path.exists() and path.stat().st_size > 2_000_000:
+                path.unlink()
+            sa = SECURITY_ATTRIBUTES(ctypes.sizeof(SECURITY_ATTRIBUTES), None, True)  # heranca
+            h = kernel32.CreateFileW(str(path), FILE_APPEND_DATA, FILE_SHARE_READ_WRITE, ctypes.byref(sa),
+                                     OPEN_ALWAYS, 0x80, None)
+            return None if h in (None, INVALID_HANDLE_VALUE) else h
+        except Exception:
+            return None
+
     CREATE_UNICODE_ENVIRONMENT = 0x00000400
     CREATE_NO_WINDOW = 0x08000000
     CREATE_NEW_CONSOLE = 0x00000010
@@ -176,13 +229,17 @@ def make_windows_backend(agent_argv_fn):
         def __init__(self, hProcess, hThread, pid):
             self._h = hProcess
             self._pid = pid
+            self.exit_code = None
             kernel32.CloseHandle(hThread)
 
         def is_alive(self) -> bool:
             code = wintypes.DWORD()
             if not kernel32.GetExitCodeProcess(self._h, ctypes.byref(code)):
                 return False
-            return code.value == STILL_ACTIVE
+            if code.value != STILL_ACTIVE:
+                self.exit_code = code.value
+                return False
+            return True
 
         def terminate(self) -> None:
             kernel32.TerminateProcess(self._h, 0)
@@ -227,17 +284,23 @@ def make_windows_backend(agent_argv_fn):
                 raise ctypes.WinError(ctypes.get_last_error())
             env = ctypes.c_void_p()
             created = False
+            logh = None
             try:
                 if not userenv.CreateEnvironmentBlock(ctypes.byref(env), htok, False):
                     env = ctypes.c_void_p()  # segue sem bloco de ambiente
                 si = STARTUPINFOW()
                 si.cb = ctypes.sizeof(si)
                 si.lpDesktop = "winsta0\\default"  # área de trabalho interativa do usuário
+                logh = _open_agent_log(sid)
+                if logh:
+                    si.dwFlags |= STARTF_USESTDHANDLES
+                    si.hStdOutput = logh
+                    si.hStdError = logh
                 pi = PROCESS_INFORMATION()
                 cmd = subprocess_list2cmdline(agent_argv_fn(sid))
                 flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW
                 ok = advapi32.CreateProcessAsUserW(
-                    htok, None, ctypes.create_unicode_buffer(cmd), None, None, False,
+                    htok, None, ctypes.create_unicode_buffer(cmd), None, None, bool(logh),
                     flags, env, None, ctypes.byref(si), ctypes.byref(pi))
                 if not ok:
                     raise ctypes.WinError(ctypes.get_last_error())
@@ -246,9 +309,9 @@ def make_windows_backend(agent_argv_fn):
             finally:
                 if env:
                     userenv.DestroyEnvironmentBlock(env)
+                if logh:
+                    kernel32.CloseHandle(logh)  # o agente ja herdou a sua copia
                 kernel32.CloseHandle(htok)
-                if not created:
-                    pass
 
     return WindowsSessionBackend()
 

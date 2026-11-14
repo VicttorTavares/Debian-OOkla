@@ -788,3 +788,39 @@ def test_pick_port_and_port_free():
     assert port_free(taken) is False
     assert pick_port(taken, (_free_port(),)) != taken
     s.close()
+
+
+def test_session_manager_exponential_backoff_and_exit_code(caplog):
+    import logging as _logging
+    from screencam.sessions import SessionInfo, SessionManager
+
+    class Dying:
+        exit_code = 0xC0000142
+
+        def is_alive(self):
+            return False
+
+        def terminate(self):
+            pass
+
+    class Backend:
+        def __init__(self):
+            self.launches = 0
+
+        def list_sessions(self):
+            return [SessionInfo(2, "u", True, True)]
+
+        def launch_agent(self, sid):
+            self.launches += 1
+            return Dying()
+
+    clock = [0.0]
+    b = Backend()
+    m = SessionManager(b, respawn_backoff=3.0, clock=lambda: clock[0])
+    with caplog.at_level(_logging.WARNING):
+        for t in (0, 1, 3.1, 4, 9.2, 10, 21.5):   # morre sempre na hora
+            clock[0] = t
+            m.reconcile()
+    # backoff dobra (3s, 6s, 12s...): bem menos lancamentos que um a cada ciclo
+    assert b.launches == 3, b.launches
+    assert any("0xC0000142" in r.message for r in caplog.records)

@@ -170,10 +170,12 @@ if ($sdp -match '^RTSP/1.0 200') {
            "Isso e esperado se NAO houver usuario conectado na area de trabalho."
     if ($RequireStream) { Bad $msg } else { Warn $msg }
 }
-$agentLogs = @(Get-ChildItem "C:\Users\*\AppData\Local\ScreenCamONVIF\logs\agent.log" -ErrorAction SilentlyContinue)
+# saida (stdout/stderr) do agente, capturada pelo servico: mostra ate falhas muito precoces
+$agentLogs = @(Get-ChildItem (Join-Path $env:ProgramData "ScreenCamONVIF\logs\agente-sessao-*.log") -ErrorAction SilentlyContinue)
+$agentLogs += @(Get-ChildItem "C:\Users\*\AppData\Local\ScreenCamONVIF\logs\agent.log" -ErrorAction SilentlyContinue)
 foreach ($al in $agentLogs) {
-    Write-Host "---- $($al.FullName) (ultimas 15 linhas) ----"
-    Get-Content $al.FullName -Tail 15 -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $_" }
+    Write-Host "---- $($al.FullName) (ultimas 25 linhas) ----"
+    Get-Content $al.FullName -Tail 25 -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $_" }
 }
 if ($agentLogs.Count -eq 0) { Warn "Nenhum agent.log encontrado (o agente nao chegou a rodar em nenhuma sessao de usuario)" }
 
