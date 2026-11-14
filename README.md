@@ -47,9 +47,11 @@ o agente segue a sessão ativa — todos que usam a máquina são gravados.
 | Multiusuário | Canal único que segue a sessão ativa; troca de usuário e RDP gravam no mesmo canal |
 | Discrição | Sem janela/ícone por padrão (`visible_indicator = false`); **não registra o que é digitado** |
 
+> **Instalando em outra máquina?** Siga o [Guia de instalação e solução de problemas](docs/GUIA-DE-INSTALACAO.md) (passo a passo, cadastro no NVR, reparo automático e checklist).
+
 ## Instalação (administrador)
 
-1. Execute `ScreenCamONVIF-Setup-1.5.0.exe` como administrador.
+1. Execute `ScreenCamONVIF-Setup-1.6.0.exe` como administrador.
 2. No assistente, informe:
    - **nome do dispositivo, usuário e senha** (a senha deve ter **10 caracteres** — exigência
      de gravadores Intelbras/Hikvision —, com confirmação);
@@ -268,7 +270,7 @@ No Windows 10/11 com Python 3.11+:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
-# => installer\Output\ScreenCamONVIF-Setup-1.5.0.exe
+# => installer\Output\ScreenCamONVIF-Setup-1.6.0.exe
 ```
 
 O script baixa o **FFmpeg** (GitHub/BtbN, com gyan.dev como alternativa, repetição e

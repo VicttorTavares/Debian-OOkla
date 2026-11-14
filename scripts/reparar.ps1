@@ -187,7 +187,13 @@ if (Test-Path $verify) {
 Step "Resultado"
 if ($ok) {
     Log "SUCESSO. Agora, no NVR (Hikvision): Configuracao > Sistema > Gerenciamento de camera > Adicao personalizada:"
-    Log "    Endereco IP : $((Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -like ($NvrIp.Substring(0, $NvrIp.LastIndexOf('.')) + '.*') } | Select-Object -First 1).IPAddress)  (este PC)"
+    $myIp = $null
+    try { $myIp = (Find-NetRoute -RemoteIPAddress $NvrIp -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -First 1).IPAddress } catch { }
+    if (-not $myIp) {
+        $myIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1).IPAddress
+    }
+    Log "    Endereco IP : $myIp  (este PC)"
     Log "    Protocolo   : ONVIF"
     Log "    Porta       : $OnvifPort"
     Log "    Usuario     : $User"

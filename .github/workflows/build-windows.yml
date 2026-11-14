@@ -96,6 +96,17 @@ jobs:
           & "$env:ProgramFiles\ScreenCamONVIF\ScreenCamONVIF.exe" status
           & "$env:ProgramFiles\ScreenCamONVIF\ScreenCamONVIF.exe" doctor
           exit 0
+      - name: Atualizar por cima (instalador de novo, config forcada) e verificar
+        shell: powershell
+        run: |
+          $exe = (Get-ChildItem setup -Filter *.exe | Select-Object -First 1).FullName
+          $p = Start-Process -FilePath $exe -PassThru -ArgumentList @(
+            '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART',"/LOG=$PWD\atualizacao.log",'/FORCECONFIG=1',
+            '/NVRIP=192.168.25.200','/USER=admin',"/PASS=$env:TEST_PASS",'/ONVIFPORT=80')
+          if (-not $p.WaitForExit(240000)) { Write-Host "[FALHA] atualizacao travou"; Stop-Process -Id $p.Id -Force; exit 1 }
+          Write-Host "Atualizacao: codigo $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { Get-Content atualizacao.log -Tail 60; exit 1 }
+          ./scripts/verificar-instalacao.ps1 -User admin -Password $env:TEST_PASS -RequireStream
       - name: Reparar com reparar.ps1 (cenario de reinstalacao por cima)
         shell: powershell
         run: ./scripts/reparar.ps1 -NvrIp 192.168.25.200 -User admin -Password $env:TEST_PASS -OnvifPort 80 -NoPause

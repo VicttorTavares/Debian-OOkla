@@ -13,7 +13,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 APP_NAME = "ScreenCamONVIF"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 
 
 def program_data_dir() -> Path:
