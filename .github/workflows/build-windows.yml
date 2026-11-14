@@ -115,6 +115,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force logs | Out-Null
           Copy-Item "$env:ProgramData\ScreenCamONVIF\logs\*" logs -ErrorAction SilentlyContinue
+          Get-ChildItem "C:\Users\*\AppData\Local\ScreenCamONVIF\logs\*.log" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName ("logs\agente-" + $_.Name) }
           Copy-Item install.log logs -ErrorAction SilentlyContinue
           Get-WinEvent -FilterHashtable @{LogName='System';ProviderName='Service Control Manager'} -MaxEvents 30 -ErrorAction SilentlyContinue |
             Format-List TimeCreated, Message | Out-File logs\eventos-scm.txt

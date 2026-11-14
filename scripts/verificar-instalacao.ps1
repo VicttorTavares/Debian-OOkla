@@ -12,6 +12,7 @@ param(
     [string]$User = "admin",
     [string]$Password = "",
     [int]$WaitSeconds = 45,
+    [switch]$RequireStream,   # exige video publicado pelo agente (PC com usuario conectado)
     [string]$AppDir = (Join-Path $env:ProgramFiles "ScreenCamONVIF")
 )
 $ErrorActionPreference = "Continue"
@@ -137,14 +138,57 @@ try {
     $tcp.Close()
 } catch { Bad "RTSP nao respondeu: $($_.Exception.Message)" }
 
+# 4b) stream publicado pelo agente de captura (DESCRIBE) ---------------------
+function Get-RtspDescribe([int]$port) {
+    try {
+        $tcp = New-Object Net.Sockets.TcpClient
+        $tcp.Connect("127.0.0.1", $port)
+        $stream = $tcp.GetStream(); $stream.ReadTimeout = 5000
+        $req = [Text.Encoding]::ASCII.GetBytes("DESCRIBE rtsp://127.0.0.1:$port/screen RTSP/1.0`r`nCSeq: 2`r`nAccept: application/sdp`r`n`r`n")
+        $stream.Write($req, 0, $req.Length)
+        Start-Sleep -Milliseconds 500
+        $buf = New-Object byte[] 4096
+        $n = $stream.Read($buf, 0, 4096)
+        $tcp.Close()
+        return [Text.Encoding]::ASCII.GetString($buf, 0, $n)
+    } catch { return "" }
+}
+$deadline = (Get-Date).AddSeconds($WaitSeconds)
+$sdp = ""
+do {
+    $sdp = Get-RtspDescribe $RtspPort
+    if ($sdp -match '^RTSP/1.0 200') { break }
+    Start-Sleep -Seconds 3
+} while ((Get-Date) -lt $deadline)
+if ($sdp -match '^RTSP/1.0 200') {
+    $v = if ($sdp -match 'm=video') { "video" } else { "SEM video" }
+    $a = if ($sdp -match 'm=audio') { "audio" } else { "sem audio" }
+    $c = if ($sdp -match 'H265|HEVC') { "H.265" } elseif ($sdp -match 'H264') { "H.264" } else { "codec ?" }
+    Ok "Stream publicado pelo agente de captura: $v + $a ($c)"
+} else {
+    $msg = "Nenhum stream publicado em rtsp://127.0.0.1:$RtspPort/screen (o agente de captura nao esta enviando video). " +
+           "Isso e esperado se NAO houver usuario conectado na area de trabalho."
+    if ($RequireStream) { Bad $msg } else { Warn $msg }
+}
+$agentLogs = @(Get-ChildItem "C:\Users\*\AppData\Local\ScreenCamONVIF\logs\agent.log" -ErrorAction SilentlyContinue)
+foreach ($al in $agentLogs) {
+    Write-Host "---- $($al.FullName) (ultimas 15 linhas) ----"
+    Get-Content $al.FullName -Tail 15 -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $_" }
+}
+if ($agentLogs.Count -eq 0) { Warn "Nenhum agent.log encontrado (o agente nao chegou a rodar em nenhuma sessao de usuario)" }
+
 # 5) logs ------------------------------------------------------------------
 $log = Join-Path $env:ProgramData "ScreenCamONVIF\logs\service.log"
 if (Test-Path $log) {
-    $tail = Get-Content $log -Tail 400 -ErrorAction SilentlyContinue
-    $erros = @($tail | Where-Object { $_ -match 'Traceback|ERROR|Erro fatal' })
-    if ($erros.Count -gt 0) { Bad "Log do servico contem erros (ultimos: $($erros[-1]))" } else { Ok "Log do servico sem erros" }
-    Write-Host "---- service.log (ultimas 12 linhas) ----"
-    $tail | Select-Object -Last 12 | ForEach-Object { Write-Host "    $_" }
+    $tail = Get-Content $log -Tail 400 -Encoding UTF8 -ErrorAction SilentlyContinue
+    # Falha real = excecao nao tratada. Mensagens ERROR conhecidas (porta ocupada -> alternativa) sao avisos.
+    $fatais = @($tail | Where-Object { $_ -match 'Traceback|Erro fatal|Nenhuma porta ONVIF' })
+    $erros = @($tail | Where-Object { $_ -match ' ERROR ' })
+    if ($fatais.Count -gt 0) { Bad "Log do servico contem falha grave (ultima: $($fatais[-1]))" }
+    else { Ok "Log do servico sem falhas graves" }
+    foreach ($e in ($erros | Select-Object -Last 3)) { Warn "Log do servico: $e" }
+    Write-Host "---- service.log (ultimas 14 linhas) ----"
+    $tail | Select-Object -Last 14 | ForEach-Object { Write-Host "    $_" }
 } else {
     Bad "Log do servico nao existe em $log (o servico nunca chegou a iniciar)"
 }

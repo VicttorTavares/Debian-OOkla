@@ -131,6 +131,9 @@ def run_doctor(config_path: str | None = None) -> int:
         else:
             from .netutil import port_owner
             owner = port_owner(port)
+            if owner.lower().startswith("mediamtx"):
+                r.add(OK, f"Porta {label} {port}", f"em uso pelo mediamtx do ScreenCam ({owner})")
+                continue
             r.add(WARN, f"Porta {label} {port} ocupada por outro programa" + (f": {owner}" if owner else ""),
                   "o servico usa uma porta alternativa automaticamente (veja 'ScreenCamONVIF.exe status'); "
                   "para usar a %d, libere-a e reinicie o servico" % port)
