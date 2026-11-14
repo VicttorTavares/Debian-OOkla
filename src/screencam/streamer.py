@@ -129,11 +129,13 @@ def build_mediamtx_config(cfg: Config) -> str:
         "      - action: read",
         "        path:",
     ]
+    # quando o IP do NVR é conhecido, só ele pode ler o stream (alem do localhost)
+    read_ips = f"['{cfg.network.nvr_ip}']" if cfg.network.nvr_ip else "[]"
     if cfg.auth.enabled:
         users += [
             f"  - user: {_yaml_str(cfg.auth.username)}",
             f"    pass: {_yaml_str(cfg.auth.password)}",
-            "    ips: []",
+            f"    ips: {read_ips}",
             "    permissions:",
             "      - action: read",
             "        path:",
@@ -142,7 +144,7 @@ def build_mediamtx_config(cfg: Config) -> str:
         users += [
             "  - user: any",
             "    pass:",
-            "    ips: []",
+            f"    ips: {read_ips}",
             "    permissions:",
             "      - action: read",
             "        path:",

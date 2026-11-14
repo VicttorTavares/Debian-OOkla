@@ -3,7 +3,7 @@
 
 #define AppName "ScreenCam ONVIF"
 #ifndef AppVersion
-  #define AppVersion "1.3.0"
+  #define AppVersion "1.4.0"
 #endif
 #define AppExe "ScreenCamONVIF.exe"
 #define DataDir "{commonappdata}\ScreenCamONVIF"
@@ -56,8 +56,8 @@ Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
 [Run]
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ScreenCam ONVIF"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ScreenCam ONVIF RTSP"""; Flags: runhidden; Tasks: firewall
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF"" dir=in action=allow program=""{app}\{#AppExe}"" enable=yes profile=any remoteip=localsubnet"; Flags: runhidden; Tasks: firewall
-Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF RTSP"" dir=in action=allow program=""{app}\mediamtx.exe"" enable=yes profile=any remoteip=localsubnet"; Flags: runhidden; Tasks: firewall
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF"" dir=in action=allow program=""{app}\{#AppExe}"" enable=yes profile=any remoteip={code:GetFirewallScope}"; Flags: runhidden; Tasks: firewall
+Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF RTSP"" dir=in action=allow program=""{app}\mediamtx.exe"" enable=yes profile=any remoteip={code:GetFirewallScope}"; Flags: runhidden; Tasks: firewall
 ; Trava o config.ini (contem a senha do NVR): apenas SYSTEM e Administradores leem
 Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}\config.ini"" /inheritance:r /grant:r ""*S-1-5-18:F"" ""*S-1-5-32-544:F"""; Flags: runhidden
 ; Cifra a senha do NVR no disco (DPAPI, escopo de maquina)
@@ -74,6 +74,15 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ScreenCam ONVIF RTSP"""; Flags: runhidden; RunOnceId: "Fw2"
 
 [Code]
+const
+  F_NAME = 0;
+  F_USER = 1;
+  F_PASS = 2;
+  F_CONFIRM = 3;
+  F_NVRIP = 4;
+  F_ONVIF = 5;
+  F_RTSP = 6;
+
 var
   CfgPage: TInputQueryWizardPage;
 
@@ -82,23 +91,60 @@ begin
   Result := ExpandConstant('{#DataDir}\config.ini');
 end;
 
+{ Escopo do firewall: so o IP do NVR, ou toda a sub-rede local se vazio }
+function GetFirewallScope(Param: String): String;
+begin
+  if Trim(CfgPage.Values[F_NVRIP]) <> '' then
+    Result := Trim(CfgPage.Values[F_NVRIP])
+  else
+    Result := 'localsubnet';
+end;
+
+function IsValidIPv4(S: String): Boolean;
+var
+  Parts: TStringList;
+  i, n: Integer;
+begin
+  Result := False;
+  Parts := TStringList.Create;
+  try
+    Parts.Delimiter := '.';
+    Parts.StrictDelimiter := True;
+    Parts.DelimitedText := S;
+    if Parts.Count <> 4 then Exit;
+    for i := 0 to 3 do
+    begin
+      if Parts[i] = '' then Exit;
+      n := StrToIntDef(Parts[i], -1);
+      if (n < 0) or (n > 255) then Exit;
+    end;
+    Result := True;
+  finally
+    Parts.Free;
+  end;
+end;
+
 procedure InitializeWizard;
 begin
   CfgPage := CreateInputQueryPage(wpSelectTasks,
     'Configuracao da camera ONVIF',
     'Dados que o NVR usara para adicionar este computador',
     'O NVR enxergara este computador como uma camera IP. Defina usuario e senha ' +
-    '(serao pedidos ao adicionar a camera no NVR).');
+    '(serao pedidos ao adicionar a camera no NVR). A senha deve ter 10 caracteres.');
   CfgPage.Add('Nome do dispositivo ({computer} = nome do PC):', False);
   CfgPage.Add('Usuario ONVIF/RTSP:', False);
-  CfgPage.Add('Senha (minimo 6 caracteres):', True);
-  CfgPage.Add('Porta ONVIF (HTTP):', False);
+  CfgPage.Add('Senha (10 caracteres):', True);
+  CfgPage.Add('Confirmar senha:', True);
+  CfgPage.Add('IP do NVR/gravador (opcional; restringe o acesso a ele):', False);
+  CfgPage.Add('Porta ONVIF (informe esta porta como "gerenciamento" no NVR):', False);
   CfgPage.Add('Porta RTSP:', False);
-  CfgPage.Values[0] := 'ScreenCam-{computer}';
-  CfgPage.Values[1] := 'admin';
-  CfgPage.Values[2] := '';
-  CfgPage.Values[3] := '8000';
-  CfgPage.Values[4] := '8554';
+  CfgPage.Values[F_NAME] := 'ScreenCam-{computer}';
+  CfgPage.Values[F_USER] := 'admin';
+  CfgPage.Values[F_PASS] := '';
+  CfgPage.Values[F_CONFIRM] := '';
+  CfgPage.Values[F_NVRIP] := '';
+  CfgPage.Values[F_ONVIF] := '8000';
+  CfgPage.Values[F_RTSP] := '8554';
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
@@ -114,21 +160,31 @@ begin
   Result := True;
   if CurPageID = CfgPage.ID then
   begin
-    P1 := StrToIntDef(CfgPage.Values[3], 0);
-    P2 := StrToIntDef(CfgPage.Values[4], 0);
-    if Trim(CfgPage.Values[1]) = '' then
+    P1 := StrToIntDef(CfgPage.Values[F_ONVIF], 0);
+    P2 := StrToIntDef(CfgPage.Values[F_RTSP], 0);
+    if Trim(CfgPage.Values[F_USER]) = '' then
     begin
       MsgBox('Informe o usuario.', mbError, MB_OK);
       Result := False;
     end
-    else if Length(CfgPage.Values[2]) < 6 then
+    else if Length(CfgPage.Values[F_PASS]) < 10 then
     begin
-      MsgBox('A senha deve ter ao menos 6 caracteres.', mbError, MB_OK);
+      MsgBox('A senha deve ter 10 caracteres (exigencia do gravador).', mbError, MB_OK);
       Result := False;
     end
-    else if (Pos(';', CfgPage.Values[2]) > 0) or (Pos('#', CfgPage.Values[2]) > 0) then
+    else if CfgPage.Values[F_PASS] <> CfgPage.Values[F_CONFIRM] then
+    begin
+      MsgBox('A senha e a confirmacao nao coincidem.', mbError, MB_OK);
+      Result := False;
+    end
+    else if (Pos(';', CfgPage.Values[F_PASS]) > 0) or (Pos('#', CfgPage.Values[F_PASS]) > 0) then
     begin
       MsgBox('A senha nao pode conter ";" nem "#".', mbError, MB_OK);
+      Result := False;
+    end
+    else if (Trim(CfgPage.Values[F_NVRIP]) <> '') and (not IsValidIPv4(Trim(CfgPage.Values[F_NVRIP]))) then
+    begin
+      MsgBox('IP do NVR invalido. Use um IPv4 como 192.168.1.50, ou deixe em branco.', mbError, MB_OK);
       Result := False;
     end
     else if (P1 < 1) or (P1 > 65535) or (P2 < 1) or (P2 > 65535) or (P1 = P2) then
@@ -149,11 +205,12 @@ begin
     if LoadStringFromFile(ExpandConstant('{app}\config.template.ini'), S) then
     begin
       T := String(S);
-      StringChangeEx(T, '@NAME@', CfgPage.Values[0], True);
-      StringChangeEx(T, '@USER@', Trim(CfgPage.Values[1]), True);
-      StringChangeEx(T, '@PASS@', CfgPage.Values[2], True);
-      StringChangeEx(T, '@ONVIF_PORT@', CfgPage.Values[3], True);
-      StringChangeEx(T, '@RTSP_PORT@', CfgPage.Values[4], True);
+      StringChangeEx(T, '@NAME@', CfgPage.Values[F_NAME], True);
+      StringChangeEx(T, '@USER@', Trim(CfgPage.Values[F_USER]), True);
+      StringChangeEx(T, '@PASS@', CfgPage.Values[F_PASS], True);
+      StringChangeEx(T, '@NVR_IP@', Trim(CfgPage.Values[F_NVRIP]), True);
+      StringChangeEx(T, '@ONVIF_PORT@', CfgPage.Values[F_ONVIF], True);
+      StringChangeEx(T, '@RTSP_PORT@', CfgPage.Values[F_RTSP], True);
       SaveStringToFile(ConfigFile, AnsiString(T), False);
     end;
   end;

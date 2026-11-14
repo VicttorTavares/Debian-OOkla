@@ -127,6 +127,7 @@ class ServerCore:
             "codec": self.cfg.video.codec,
             "onvif_port": self.cfg.network.onvif_port,
             "rtsp_port": self.cfg.network.rtsp_port,
+            "nvr_ip": self.cfg.network.nvr_ip or "qualquer (rede local)",
             "recording": bool(self.recorder),
         }
 
@@ -134,8 +135,9 @@ class ServerCore:
         self.resolve_codec()
         if self.discovery:
             self.discovery.scopes = " ".join(scopes(self.cfg))
-        log.info("%s %s (serviço) - ONVIF %s / RTSP %s, video=%s/%s, audio=%s",
+        log.info("%s %s (serviço) - ONVIF %s / RTSP %s, NVR=%s, video=%s/%s, audio=%s",
                  APP_NAME, APP_VERSION, self.cfg.network.onvif_port, self.cfg.network.rtsp_port,
+                 self.cfg.network.nvr_ip or "qualquer (rede local)",
                  self.cfg.video.codec.upper(), self.cfg.video.encoder,
                  self.cfg.audio.codec if self.cfg.audio.enabled else "desativado")
         self.mediamtx.start()

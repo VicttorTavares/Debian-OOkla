@@ -13,7 +13,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 APP_NAME = "ScreenCamONVIF"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 
 def program_data_dir() -> Path:
@@ -79,6 +79,10 @@ class NetworkCfg:
     onvif_port: int = 8000
     rtsp_port: int = 8554
     discovery: bool = True
+    # IP do NVR (gravador) ao qual este dispositivo pertence. Vazio = qualquer NVR
+    # da rede local. Quando preenchido, o acesso de leitura (RTSP/ONVIF) e restrito
+    # a esse IP e o firewall e liberado apenas para ele.
+    nvr_ip: str = ""
 
 
 @dataclass
@@ -309,6 +313,22 @@ def _validate(cfg: Config) -> None:
         cfg.service.mode = "service"
     if cfg.service.capture_scope not in ("active_console", "all_sessions"):
         cfg.service.capture_scope = "active_console"
+    cfg.network.nvr_ip = cfg.network.nvr_ip.strip()
+    if cfg.network.nvr_ip and not _valid_ip(cfg.network.nvr_ip):
+        log.warning("nvr_ip invalido (%s); tratando como 'qualquer NVR'", cfg.network.nvr_ip)
+        cfg.network.nvr_ip = ""
+    if cfg.auth.enabled and 0 < len(cfg.auth.password) < 10:
+        log.warning("A senha tem menos de 10 caracteres; alguns NVRs (Intelbras/Hikvision) "
+                    "exigem 10. Se a camera nao autenticar, use uma senha de 10 caracteres.")
+
+
+def _valid_ip(text: str) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        return False
 
 
 # ---------------------------------------------------------------- agente

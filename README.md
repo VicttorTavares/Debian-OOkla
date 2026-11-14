@@ -49,8 +49,13 @@ o agente segue a sessão ativa — todos que usam a máquina são gravados.
 
 ## Instalação (administrador)
 
-1. Execute `ScreenCamONVIF-Setup-1.3.0.exe` como administrador.
-2. No assistente, informe **nome do dispositivo, usuário, senha, porta ONVIF e porta RTSP**.
+1. Execute `ScreenCamONVIF-Setup-1.4.0.exe` como administrador.
+2. No assistente, informe:
+   - **nome do dispositivo, usuário e senha** (a senha deve ter **10 caracteres** — exigência
+     de gravadores Intelbras/Hikvision —, com confirmação);
+   - **IP do NVR** (opcional): se preenchido, o dispositivo passa a **pertencer àquele gravador**
+     — só ele consegue ler o stream (firewall + usuário de leitura restritos a esse IP);
+   - **porta ONVIF** (informe a mesma no campo *Porta de gerenciamento* do NVR) e **porta RTSP**.
 3. Deixe marcada a opção *Liberar no Firewall*.
 4. O instalador registra e inicia o **serviço do Windows** `ScreenCamONVIF` (início automático).
    Não há ícone para o usuário comum.
@@ -92,8 +97,15 @@ O serviço também re-cifra sozinho qualquer senha deixada em texto ao iniciar.
 
 ## Configuração no NVR
 
-1. **Adicionar câmera**: protocolo **ONVIF**, IP do computador, porta **8000**, usuário/senha
-   definidos na instalação (ou use a busca automática).
+> **Como funciona (modelo ONVIF):** este programa é uma **câmera passiva** — é o **NVR que se
+> conecta a ele** (igual a cadastrar uma câmera IP no gravador: você digita o IP da câmera no
+> NVR). O computador não "aponta" para o NVR; ele apenas atende. O campo **IP do NVR** do
+> instalador serve para **vincular** o dispositivo a um gravador específico: quando preenchido,
+> só aquele IP consegue puxar o vídeo (firewall + leitura RTSP/ONVIF restritos a ele).
+
+1. **Adicionar câmera**: protocolo **ONVIF**, **IP do computador** (a "câmera"), porta de
+   gerenciamento = **porta ONVIF** definida na instalação (padrão **8000**), usuário/senha
+   definidos na instalação (ou use a busca automática). A senha tem **10 caracteres**.
    Se o NVR pedir a URL RTSP diretamente: `rtsp://IP-DO-PC:8554/screen`.
 2. **Gravação por movimento**: em *Agenda de gravação*, selecione **Movimento/Evento**
    para o canal. Configure pré-gravação (ex.: 5 s) e pós-gravação (ex.: 30 s).
@@ -181,6 +193,8 @@ Principais opções (o arquivo completo é comentado):
 | | `stream_mode` | `continuous` | `on_activity` só transmite durante a atividade |
 | `[recording]` | `enabled` | `false` | Gravação local de backup |
 | `[network]` | `advertise_ip` | `auto` | Fixe o IP se o PC tiver várias placas/VPN |
+| | `nvr_ip` | *(vazio)* | IP do gravador; vazio = qualquer NVR da rede. Preenchido, restringe o acesso a ele |
+| | `onvif_port` / `rtsp_port` | `8000` / `8554` | Portas; informe a ONVIF como "gerenciamento" no NVR |
 | `[service]` | `mode` | `service` | `service` (SYSTEM + agente) ou `console` (1 processo) |
 | | `capture_scope` | `active_console` | Canal único; segue a sessão ativa |
 | | `visible_indicator` | `false` | Ícone discreto na bandeja do usuário |
@@ -208,7 +222,7 @@ No Windows 10/11 com Python 3.11+:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
-# => installer\Output\ScreenCamONVIF-Setup-1.3.0.exe
+# => installer\Output\ScreenCamONVIF-Setup-1.4.0.exe
 ```
 
 O script baixa o **FFmpeg** (gyan.dev) e o **MediaMTX v1.21.3**, roda os testes, gera o

@@ -564,3 +564,31 @@ def test_protect_config_noop_when_unavailable(tmp_path):
     cfg.write_text("[auth]\npassword = claro\n", encoding="utf-8")
     assert protect_config_file(cfg, cipher=FakeCipher(available=False)) is False
     assert "claro" in cfg.read_text(encoding="utf-8")  # inalterado
+
+
+# ---------------------------------------------------------------- IP do NVR
+
+def test_mediamtx_restricts_read_to_nvr_ip():
+    from screencam.streamer import build_mediamtx_config
+    cfg = Config()
+    cfg.auth.username, cfg.auth.password = "admin", "DezCarac10"
+    cfg.network.nvr_ip = "192.168.1.50"
+    yml = build_mediamtx_config(cfg)
+    # o usuario de leitura (NVR) so e aceito a partir do IP do NVR
+    assert "ips: ['192.168.1.50']" in yml
+    # localhost continua liberado (recorder local)
+    assert "ips: ['127.0.0.1', '::1']" in yml
+    # sem nvr_ip -> leitura de qualquer IP
+    cfg.network.nvr_ip = ""
+    assert "ips: []" in build_mediamtx_config(cfg)
+
+
+def test_invalid_nvr_ip_is_cleared():
+    from screencam.config import _validate
+    cfg = Config()
+    cfg.network.nvr_ip = "nao-e-um-ip"
+    _validate(cfg)
+    assert cfg.network.nvr_ip == ""
+    cfg.network.nvr_ip = "10.0.0.7"
+    _validate(cfg)
+    assert cfg.network.nvr_ip == "10.0.0.7"
