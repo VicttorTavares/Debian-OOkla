@@ -26,6 +26,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # Guarda ffmpeg.exe/mediamtx.exe entre execucoes: evita rebaixar (e sofrer
+      # com instabilidade de gyan.dev) quando os downloads nao mudaram.
+      - name: Cache binarios externos (FFmpeg, MediaMTX)
+        uses: actions/cache@v4
+        with:
+          path: vendor
+          key: vendor-${{ hashFiles('scripts/build.ps1') }}
       - name: Build
         shell: pwsh
         run: ./scripts/build.ps1

@@ -6,7 +6,12 @@
   Resultado:         installer\Output\ScreenCamONVIF-Setup-<versao>.exe
 #>
 param(
-    [string]$FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    # Fontes do FFmpeg, tentadas em ordem. A primeira (BtbN, no GitHub) e mais
+    # confiavel; o gyan.dev entra como alternativa. Ambas incluem x264/x265.
+    [string[]]$FfmpegUrls = @(
+        "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+        "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    ),
     [string]$MediaMtxVersion = "v1.21.3",
     [switch]$SkipTests
 )
@@ -15,6 +20,25 @@ $ProgressPreference = "SilentlyContinue"
 $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 
+# Baixa um arquivo tentando varias URLs, com repeticao e backoff (503/timeout sao transitorios)
+function Save-Url {
+    param([string[]]$Urls, [string]$OutFile, [int]$Retries = 4)
+    foreach ($url in $Urls) {
+        for ($i = 1; $i -le $Retries; $i++) {
+            try {
+                Write-Host "    baixando $url (tentativa $i/$Retries)"
+                Invoke-WebRequest $url -OutFile $OutFile -UseBasicParsing -TimeoutSec 300
+                return
+            } catch {
+                Write-Host "    falhou: $($_.Exception.Message)"
+                if ($i -lt $Retries) { Start-Sleep -Seconds ([Math]::Min(30, 5 * $i)) }
+            }
+        }
+        Write-Host "    desistindo desta fonte, tentando a proxima..."
+    }
+    throw "nao foi possivel baixar $OutFile de nenhuma fonte"
+}
+
 $version = (Select-String -Path src\screencam\config.py -Pattern 'APP_VERSION = "(.+)"').Matches[0].Groups[1].Value
 Write-Host "==> ScreenCam ONVIF $version"
 
@@ -22,15 +46,16 @@ Write-Host "==> ScreenCam ONVIF $version"
 New-Item -ItemType Directory -Force vendor | Out-Null
 if (-not (Test-Path vendor\ffmpeg.exe)) {
     Write-Host "==> Baixando FFmpeg"
-    Invoke-WebRequest $FfmpegUrl -OutFile vendor\ffmpeg.zip
+    Save-Url -Urls $FfmpegUrls -OutFile vendor\ffmpeg.zip
     Expand-Archive vendor\ffmpeg.zip vendor\ffmpeg_tmp -Force
     Get-ChildItem vendor\ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1 | Copy-Item -Destination vendor\ffmpeg.exe
+    if (-not (Test-Path vendor\ffmpeg.exe)) { throw "ffmpeg.exe nao encontrado no pacote baixado" }
     Remove-Item vendor\ffmpeg.zip, vendor\ffmpeg_tmp -Recurse -Force
 }
 if (-not (Test-Path vendor\mediamtx.exe)) {
     Write-Host "==> Baixando MediaMTX $MediaMtxVersion"
     $u = "https://github.com/bluenviron/mediamtx/releases/download/$MediaMtxVersion/mediamtx_${MediaMtxVersion}_windows_amd64.zip"
-    Invoke-WebRequest $u -OutFile vendor\mediamtx.zip
+    Save-Url -Urls @($u) -OutFile vendor\mediamtx.zip
     Expand-Archive vendor\mediamtx.zip vendor\mediamtx_tmp -Force
     Copy-Item vendor\mediamtx_tmp\mediamtx.exe vendor\mediamtx.exe
     if (Test-Path vendor\mediamtx_tmp\LICENSE) { Copy-Item vendor\mediamtx_tmp\LICENSE vendor\LICENSE-mediamtx.txt }

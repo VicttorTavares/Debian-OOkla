@@ -225,7 +225,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 # => installer\Output\ScreenCamONVIF-Setup-1.4.0.exe
 ```
 
-O script baixa o **FFmpeg** (gyan.dev) e o **MediaMTX v1.21.3**, roda os testes, gera o
+O script baixa o **FFmpeg** (GitHub/BtbN, com gyan.dev como alternativa, repetição e
+cache no CI) e o **MediaMTX v1.21.3**, roda os testes, gera o
 executável com PyInstaller (aplicativo de **console**, para os comandos de admin imprimirem;
 o serviço e o agente não mostram janela) e compila o instalador com Inno Setup. O workflow
 `.github/workflows/build-windows.yml` faz o mesmo no GitHub Actions e publica o
