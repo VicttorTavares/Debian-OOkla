@@ -27,6 +27,7 @@ from .control import ActivityAggregator, ControlClient, ControlServer
 from .onvif.discovery import Discovery
 from .onvif.events import EventBroker
 from .onvif.server import VS, VSC, OnvifContext, OnvifServer, scopes
+from .netutil import pick_port
 from .recorder import LocalRecorder
 from .snapshot import SnapshotProvider
 from .streamer import FFmpegPublisher, MediaMTX, compute_geometry
@@ -68,6 +69,14 @@ class ServerCore:
         self.paused = False
         self._geometry = compute_geometry(cfg)
 
+        # RTSP: se a porta estiver ocupada, usa uma alternativa (o MediaMTX nao subiria)
+        wanted_rtsp = cfg.network.rtsp_port
+        cfg.network.rtsp_port = pick_port(wanted_rtsp, (8555, 8556, 18554), cfg.network.bind_ip)
+        if cfg.network.rtsp_port != wanted_rtsp:
+            log.error("Porta RTSP %s ocupada; usando %s. Se o NVR pedir a URL RTSP, use a porta %s.",
+                      wanted_rtsp, cfg.network.rtsp_port, cfg.network.rtsp_port)
+        self.wanted_ports = {"onvif": cfg.network.onvif_port, "rtsp": wanted_rtsp}
+
         self.mediamtx = MediaMTX(cfg)
         self.broker = EventBroker(VS, VSC)
         self.aggregator = ActivityAggregator(self._on_motion)
@@ -75,7 +84,7 @@ class ServerCore:
                                      self.aggregator, status_fn=self.status)
         self.snapshot = SnapshotProvider(cfg, lambda: self._geometry)
         self.ctx = OnvifContext(cfg, lambda: self._geometry, self.snapshot.jpeg, self.broker)
-        self.onvif = OnvifServer(self.ctx)
+        self.onvif = self._bind_onvif()
         self.discovery = Discovery(self.ctx.uuid, cfg.network.onvif_port, scopes(cfg),
                                    cfg.network.advertise_ip, cfg.network.bind_ip) \
             if cfg.network.discovery else None
@@ -85,6 +94,46 @@ class ServerCore:
             from .autoregister import AutoRegister
             self.autoregister = AutoRegister(cfg, cfg.network.onvif_port, cfg.network.rtsp_port)
         self.active = False
+
+    def _bind_onvif(self) -> OnvifServer:
+        """Abre o servidor ONVIF; se a porta estiver ocupada (ex.: 80 pelo IIS/http.sys),
+        usa uma alternativa em vez de derrubar o servico, e avisa qual porta o NVR deve usar."""
+        wanted = self.cfg.network.onvif_port
+        candidates = []
+        for p in (wanted, 8000, 8080, 8899, 8001):
+            if p not in candidates:
+                candidates.append(p)
+        last_error = None
+        for port in candidates:
+            self.cfg.network.onvif_port = port
+            try:
+                server = OnvifServer(self.ctx)
+            except OSError as exc:
+                last_error = exc
+                log.warning("Porta ONVIF %s indisponivel: %s", port, exc)
+                continue
+            if port != wanted:
+                log.error("Porta ONVIF %s ocupada por outro programa; usando %s. NO NVR, cadastre a camera "
+                          "com 'Porta de gerenciamento' = %s (ou libere a porta %s e reinicie o servico).",
+                          wanted, port, port, wanted)
+            return server
+        self.cfg.network.onvif_port = wanted
+        raise OSError(f"Nenhuma porta ONVIF disponivel entre {candidates}: {last_error}")
+
+    def write_status_file(self) -> None:
+        """Grava as portas efetivas em runtime/status.json (lido por 'status', 'doctor' e verificadores)."""
+        import json
+        import time
+        try:
+            runtime = program_data_dir() / "runtime"
+            runtime.mkdir(parents=True, exist_ok=True)
+            (runtime / "status.json").write_text(json.dumps({
+                "version": APP_VERSION, "onvif_port": self.cfg.network.onvif_port,
+                "rtsp_port": self.cfg.network.rtsp_port, "wanted_ports": self.wanted_ports,
+                "nvr_ip": self.cfg.network.nvr_ip, "codec": self.cfg.video.codec,
+                "started": time.strftime("%Y-%m-%d %H:%M:%S")}), encoding="utf-8")
+        except Exception:
+            log.debug("Nao foi possivel gravar status.json", exc_info=True)
 
     def _local_rtsp(self) -> str:
         from .streamer import STREAM_PATH
@@ -147,6 +196,7 @@ class ServerCore:
                  self.cfg.video.codec.upper(), self.cfg.video.encoder,
                  self.cfg.audio.codec if self.cfg.audio.enabled else "desativado")
         self._diagnose_network()
+        self.write_status_file()
         self.mediamtx.start()
         self.control.start()
         self.onvif.start()

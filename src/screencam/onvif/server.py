@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -882,13 +883,18 @@ def _generic_handler(ns: str, name: str):
 # Servidor
 # ======================================================================
 
+class _Httpd(ThreadingHTTPServer):
+    daemon_threads = True
+    # No Windows, SO_REUSEADDR deixa dois programas dividirem a mesma porta (ambiguo);
+    # sem ele, a porta ocupada e reportada corretamente como erro.
+    allow_reuse_address = sys.platform != "win32"
+
+
 class OnvifServer:
     def __init__(self, ctx: OnvifContext):
         self.ctx = ctx
         handler = type("BoundHandler", (Handler,), {"ctx": ctx})
-        ThreadingHTTPServer.daemon_threads = True
-        ThreadingHTTPServer.allow_reuse_address = True
-        self.httpd = ThreadingHTTPServer((ctx.cfg.network.bind_ip, ctx.cfg.network.onvif_port), handler)
+        self.httpd = _Httpd((ctx.cfg.network.bind_ip, ctx.cfg.network.onvif_port), handler)
         self._thread = threading.Thread(target=self.httpd.serve_forever, name="onvif-http", daemon=True)
 
     @property
@@ -896,9 +902,12 @@ class OnvifServer:
         return self.httpd.server_address[1]
 
     def start(self):
+        self._started = True
         self._thread.start()
         log.info("Servidor ONVIF ouvindo em %s:%s", self.ctx.cfg.network.bind_ip, self.port)
 
     def stop(self):
-        self.httpd.shutdown()
+        # shutdown() bloqueia para sempre se serve_forever nunca rodou (partida que falhou no meio)
+        if getattr(self, "_started", False):
+            self.httpd.shutdown()
         self.httpd.server_close()

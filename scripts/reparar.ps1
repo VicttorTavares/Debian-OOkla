@@ -107,14 +107,8 @@ if (-not $Installer) {
     $owner = Get-PortOwner $OnvifPort
     if ($owner) {
         Log "  A porta $OnvifPort esta ocupada por '$($owner.ProcessName)' (PID $($owner.Id))."
-        $alt = 8000
-        if ($OnvifPort -ne 8000 -and -not (Get-PortOwner $alt)) {
-            Log "  Usando a porta alternativa $alt. No NVR, cadastre a camera com 'Porta de gerenciamento' = $alt."
-            $OnvifPort = $alt
-        } else {
-            Log "  ERRO: nao ha porta ONVIF livre. Feche '$($owner.ProcessName)' (ex.: IIS/'World Wide Web Publishing') e rode de novo."
-            Pause-End; exit 1
-        }
+        Log "  Nao e problema: o servico escolhe uma porta alternativa sozinho e informa qual (veja o resultado ao final)."
+        Log "  Se preferir a porta $OnvifPort no NVR, pare '$($owner.ProcessName)' (ex.: IIS: 'iisreset /stop') e rode de novo."
     } else { Log "  Porta livre." }
 
     # --- config.ini ----------------------------------------------------------
@@ -183,9 +177,11 @@ if (-not $Installer) {
 # --- verificacao ------------------------------------------------------------
 Step "8. Verificacao de ponta a ponta"
 if (Test-Path $verify) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verify -OnvifPort $OnvifPort -RtspPort $RtspPort `
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $verify `
         -User $User -Password $Password -AppDir $appDir 2>&1 | ForEach-Object { Log "$_" }
     $ok = ($LASTEXITCODE -eq 0)
+    $statusFile = Join-Path $env:ProgramData "ScreenCamONVIF\runtime\status.json"
+    if (Test-Path $statusFile) { try { $OnvifPort = [int]((Get-Content $statusFile -Raw | ConvertFrom-Json).onvif_port) } catch { } }
 } else { Log "verificar-instalacao.ps1 nao encontrado."; $ok = $false }
 
 Step "Resultado"

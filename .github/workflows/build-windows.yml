@@ -88,11 +88,12 @@ jobs:
           if ($p.ExitCode -ne 0) { exit 1 }
       - name: Verificar instalacao (Windows PowerShell 5.1)
         shell: powershell
-        run: ./scripts/verificar-instalacao.ps1 -OnvifPort 80 -User admin -Password $env:TEST_PASS
-      - name: Diagnostico (doctor)
+        run: ./scripts/verificar-instalacao.ps1 -User admin -Password $env:TEST_PASS
+      - name: Status e diagnostico (doctor)
         if: always()
         shell: powershell
         run: |
+          & "$env:ProgramFiles\ScreenCamONVIF\ScreenCamONVIF.exe" status
           & "$env:ProgramFiles\ScreenCamONVIF\ScreenCamONVIF.exe" doctor
           exit 0
       - name: Reparar com reparar.ps1 (cenario de reinstalacao por cima)

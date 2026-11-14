@@ -346,9 +346,9 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  if (CurPageID = wpFinished) and (not ServiceOk) then
-    MsgBox('A instalacao terminou, mas o SERVICO nao ficou em execucao.' + #13#10 + #13#10 +
+  if (CurPageID = wpFinished) and (not ServiceOk) and (not WizardSilent) then
+    SuppressibleMsgBox('A instalacao terminou, mas o SERVICO nao ficou em execucao.' + #13#10 + #13#10 +
       'Abra o menu Iniciar > ScreenCam ONVIF > "Reparar e diagnosticar (admin)" ' +
       'ou consulte o guia em ' + ExpandConstant('{app}\docs\GUIA-DE-INSTALACAO.md') + '.',
-      mbError, MB_OK);
+      mbError, MB_OK, IDOK);
 end;

@@ -194,6 +194,15 @@ def _service_control(cmd: str, args) -> int:
                      win32service.SERVICE_START_PENDING: "iniciando",
                      win32service.SERVICE_STOP_PENDING: "parando"}
             print(f"Servico {name}: {names.get(state, state)}")
+            st = svc.read_status_file()
+            if st and state == win32service.SERVICE_RUNNING:
+                print(f"  Porta ONVIF (gerenciamento no NVR): {st.get('onvif_port')}"
+                      f"  |  RTSP: {st.get('rtsp_port')}  |  codec: {str(st.get('codec', '')).upper()}"
+                      f"  |  NVR autorizado: {st.get('nvr_ip') or 'qualquer (sub-rede local)'}")
+                w = st.get("wanted_ports", {})
+                if w.get("onvif") and w.get("onvif") != st.get("onvif_port"):
+                    print(f"  ATENCAO: a porta ONVIF {w['onvif']} estava ocupada; usando {st['onvif_port']}. "
+                          f"Cadastre a camera no NVR com Porta = {st['onvif_port']}.")
             if state != win32service.SERVICE_RUNNING:
                 print("---- ultimas linhas do log do servico ----")
                 print(svc.tail_service_log(10))

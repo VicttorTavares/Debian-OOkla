@@ -7,8 +7,8 @@
   Saida: linhas [OK] / [AVISO] / [FALHA]; codigo de saida 1 se houver falha.
 #>
 param(
-    [int]$OnvifPort = 8000,
-    [int]$RtspPort = 8554,
+    [int]$OnvifPort = 0,   # 0 = descobrir a porta efetiva (runtime\status.json)
+    [int]$RtspPort = 0,
     [string]$User = "admin",
     [string]$Password = "",
     [int]$WaitSeconds = 45,
@@ -63,7 +63,7 @@ function Wait-TcpListen([int]$port, [int]$secs) {
     return $false
 }
 
-Write-Host "== Verificacao do ScreenCam ONVIF (ONVIF=$OnvifPort RTSP=$RtspPort) =="
+Write-Host "== Verificacao do ScreenCam ONVIF =="
 
 # 1) servico ---------------------------------------------------------------
 $svc = Get-Service -Name ScreenCamONVIF -ErrorAction SilentlyContinue
@@ -76,6 +76,24 @@ if (-not $svc) {
 }
 
 # 2) portas ----------------------------------------------------------------
+# O servico escolhe uma porta alternativa se a configurada estiver ocupada (ex.: 80 pelo IIS)
+$statusFile = Join-Path $env:ProgramData "ScreenCamONVIF\runtime\status.json"
+$deadline = (Get-Date).AddSeconds(20)
+while (-not (Test-Path $statusFile) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+$st = $null
+if (Test-Path $statusFile) { try { $st = Get-Content $statusFile -Raw | ConvertFrom-Json } catch { } }
+if ($st) {
+    if ($OnvifPort -eq 0) { $OnvifPort = [int]$st.onvif_port }
+    if ($RtspPort -eq 0)  { $RtspPort  = [int]$st.rtsp_port }
+    Ok "Portas efetivas do servico: ONVIF=$($st.onvif_port) RTSP=$($st.rtsp_port) codec=$($st.codec) NVR=$($st.nvr_ip)"
+    if ($st.wanted_ports.onvif -ne $st.onvif_port) {
+        Warn "A porta ONVIF configurada ($($st.wanted_ports.onvif)) estava ocupada; o servico usa $($st.onvif_port). No NVR, use Porta = $($st.onvif_port)."
+    }
+} else {
+    Bad "runtime\status.json nao foi criado (o servico nao chegou a abrir as portas)"
+}
+if ($OnvifPort -eq 0) { $OnvifPort = 8000 }
+if ($RtspPort -eq 0)  { $RtspPort = 8554 }
 if (Wait-TcpListen $OnvifPort 20) { Ok "Porta ONVIF $OnvifPort ouvindo" } else { Bad "Porta ONVIF $OnvifPort NAO esta ouvindo" }
 if (Wait-TcpListen $RtspPort 30)  { Ok "Porta RTSP $RtspPort ouvindo" }  else { Bad "Porta RTSP $RtspPort NAO esta ouvindo (mediamtx nao iniciou?)" }
 if (Get-NetUDPEndpoint -LocalPort 3702 -ErrorAction SilentlyContinue) { Ok "Descoberta (UDP 3702) ativa" } else { Warn "Descoberta (UDP 3702) inativa" }

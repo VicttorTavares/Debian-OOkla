@@ -129,8 +129,11 @@ def run_doctor(config_path: str | None = None) -> int:
         elif state == "servico":
             r.add(OK, f"Porta {label} {port}", "em uso pelo proprio ScreenCam (servico ativo)")
         else:
-            r.add(FAIL, f"Porta {label} {port} ocupada por outro programa",
-                  "feche o programa (no Windows: 'netstat -ano | findstr :%d') ou mude a porta no config.ini" % port)
+            from .netutil import port_owner
+            owner = port_owner(port)
+            r.add(WARN, f"Porta {label} {port} ocupada por outro programa" + (f": {owner}" if owner else ""),
+                  "o servico usa uma porta alternativa automaticamente (veja 'ScreenCamONVIF.exe status'); "
+                  "para usar a %d, libere-a e reinicie o servico" % port)
 
     # ---------------------------------------------------------- rede / NVR
     nvr = n.nvr_ip
@@ -163,7 +166,11 @@ def run_doctor(config_path: str | None = None) -> int:
             r.add(level, "Servico do Windows", names.get(state, str(state)))
         except Exception as exc:
             r.add(FAIL, "Servico do Windows", f"nao instalado ({exc}); rode 'ScreenCamONVIF.exe install-service'")
-        from .service import tail_service_log
+        from .service import read_status_file, tail_service_log
+        st = read_status_file()
+        if st:
+            r.add(OK, "Portas efetivas do servico", f"ONVIF={st.get('onvif_port')} RTSP={st.get('rtsp_port')} "
+                                                    f"(configuradas: {st.get('wanted_ports')})")
         r.add(OK, "Log do servico (ultimas linhas)", "\n" + tail_service_log(8))
     else:
         r.add(WARN, "Servico do Windows", "verificacao disponivel apenas no Windows")

@@ -9,6 +9,7 @@ usuário e a pior consequência de uma falsificação é gravar um pouco a mais)
 from __future__ import annotations
 
 import json
+import sys
 import logging
 import threading
 import time
@@ -61,6 +62,11 @@ class ActivityAggregator:
                 self.on_change(active)
             except Exception:
                 log.exception("Erro no callback de atividade agregada")
+
+
+class _ControlHttpd(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = sys.platform != "win32"
 
 
 class ControlServer:
@@ -117,8 +123,7 @@ class ControlServer:
                 else:
                     self._json(404, {"error": "not found"})
 
-        ThreadingHTTPServer.daemon_threads = True
-        self.httpd = ThreadingHTTPServer((host, port), H)
+        self.httpd = _ControlHttpd((host, port), H)
         self._thread = threading.Thread(target=self.httpd.serve_forever, name="control", daemon=True)
         self._sweeper = threading.Thread(target=self._sweep_loop, name="control-sweep", daemon=True)
         self._stop = threading.Event()
@@ -128,6 +133,7 @@ class ControlServer:
         return self.httpd.server_address[1]
 
     def start(self):
+        self._started = True
         self._thread.start()
         self._sweeper.start()
         log.info("Canal de controle em 127.0.0.1:%s", self.port)
@@ -138,7 +144,8 @@ class ControlServer:
 
     def stop(self):
         self._stop.set()
-        self.httpd.shutdown()
+        if getattr(self, "_started", False):
+            self.httpd.shutdown()
         self.httpd.server_close()
 
 

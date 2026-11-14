@@ -167,6 +167,15 @@ def tail_service_log(lines: int = 25) -> str:
     return "\n".join(text.splitlines()[-lines:])
 
 
+def read_status_file() -> dict:
+    """Portas efetivas gravadas pelo servico (runtime/status.json); vazio se nao existir."""
+    import json
+    try:
+        return json.loads((program_data_dir() / "runtime" / "status.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def service_exists() -> bool:
     import win32service
     import win32serviceutil

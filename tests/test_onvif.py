@@ -730,3 +730,61 @@ def test_doctor_runs_and_reports(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "diagnostico" in out and "[AVISO] Senha" in out  # senha < 10 e sinalizada
     assert "Porta ONVIF" in out and "resumo" in out
+
+
+def test_servercore_falls_back_when_onvif_port_busy(tmp_path, monkeypatch):
+    """Reproduz o Windows com IIS/http.sys na porta 80: o servico NAO pode morrer."""
+    import socket
+    from screencam import app as app_mod
+    monkeypatch.setattr(app_mod, "program_data_dir", lambda: tmp_path)
+    busy = socket.socket()
+    busy.bind(("0.0.0.0", 0))
+    busy.listen(1)
+    busy_port = busy.getsockname()[1]
+    try:
+        cfg = Config()
+        cfg.network.onvif_port = busy_port           # "porta 80" ocupada
+        cfg.network.rtsp_port = _free_port()
+        cfg.network.discovery = False
+        cfg.service.control_port = 0
+        core = app_mod.ServerCore(cfg)               # antes: PermissionError/OSError derrubava o servico
+        assert core.cfg.network.onvif_port != busy_port
+        assert core.wanted_ports["onvif"] == busy_port
+        core.write_status_file()
+        import json
+        st = json.loads((tmp_path / "runtime" / "status.json").read_text(encoding="utf-8"))
+        assert st["onvif_port"] == core.cfg.network.onvif_port and st["wanted_ports"]["onvif"] == busy_port
+        core.onvif.stop()
+    finally:
+        busy.close()
+
+
+def test_servercore_falls_back_when_rtsp_port_busy():
+    import socket
+    from screencam.app import ServerCore
+    busy = socket.socket()
+    busy.bind(("0.0.0.0", 0))
+    busy.listen(1)
+    try:
+        cfg = Config()
+        cfg.network.rtsp_port = busy.getsockname()[1]
+        cfg.network.onvif_port = _free_port()
+        cfg.network.discovery = False
+        cfg.service.control_port = 0
+        core = ServerCore(cfg)
+        assert core.cfg.network.rtsp_port != busy.getsockname()[1]
+        core.onvif.stop()
+    finally:
+        busy.close()
+
+
+def test_pick_port_and_port_free():
+    import socket
+    from screencam.netutil import pick_port, port_free
+    s = socket.socket()
+    s.bind(("0.0.0.0", 0))
+    s.listen(1)
+    taken = s.getsockname()[1]
+    assert port_free(taken) is False
+    assert pick_port(taken, (_free_port(),)) != taken
+    s.close()
