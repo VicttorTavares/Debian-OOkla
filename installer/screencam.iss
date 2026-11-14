@@ -3,7 +3,7 @@
 
 #define AppName "ScreenCam ONVIF"
 #ifndef AppVersion
-  #define AppVersion "1.4.0"
+  #define AppVersion "1.5.0"
 #endif
 #define AppExe "ScreenCamONVIF.exe"
 #define DataDir "{commonappdata}\ScreenCamONVIF"
@@ -85,10 +85,17 @@ const
 
 var
   CfgPage: TInputQueryWizardPage;
+  ArPage: TInputQueryWizardPage;
 
 function ConfigFile: String;
 begin
   Result := ExpandConstant('{#DataDir}\config.ini');
+end;
+
+{ Registro ativo habilitado quando ha IP do NVR e porta de registro informados }
+function ArEnabled: Boolean;
+begin
+  Result := (Trim(CfgPage.Values[F_NVRIP]) <> '') and (Trim(ArPage.Values[0]) <> '');
 end;
 
 { Escopo do firewall: so o IP do NVR, ou toda a sub-rede local se vazio }
@@ -145,12 +152,28 @@ begin
   CfgPage.Values[F_NVRIP] := '';
   CfgPage.Values[F_ONVIF] := '8000';
   CfgPage.Values[F_RTSP] := '8554';
+
+  ArPage := CreateInputQueryPage(CfgPage.ID,
+    'Registro ativo no NVR (opcional)',
+    'Use apenas se a busca automatica nao encontrar a camera',
+    'Se o NVR e o computador estao em sub-redes diferentes (ex.: 192.168.25.x e ' +
+    '192.168.26.x) ou ha NAT, a busca automatica falha. Neste caso o dispositivo ' +
+    'pode CONECTAR no NVR (tela "End. servidor / ID dispositivo"). Deixe a porta em ' +
+    'branco para nao usar. (Recurso experimental; confira o IP do NVR na tela anterior.)');
+  ArPage.Add('Porta do Registro Automatico no NVR (em branco = nao usar):', False);
+  ArPage.Add('ID do dispositivo (no NVR):', False);
+  ArPage.Add('Usuario no NVR (opcional):', False);
+  ArPage.Add('Senha no NVR (opcional):', True);
+  ArPage.Values[0] := '';
+  ArPage.Values[1] := '1';
+  ArPage.Values[2] := '';
+  ArPage.Values[3] := '';
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   { Em atualizacoes, mantem a configuracao existente }
-  Result := (PageID = CfgPage.ID) and FileExists(ConfigFile);
+  Result := ((PageID = CfgPage.ID) or (PageID = ArPage.ID)) and FileExists(ConfigFile);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -192,6 +215,23 @@ begin
       MsgBox('Portas invalidas.', mbError, MB_OK);
       Result := False;
     end;
+  end
+  else if CurPageID = ArPage.ID then
+  begin
+    if Trim(ArPage.Values[0]) <> '' then
+    begin
+      P1 := StrToIntDef(Trim(ArPage.Values[0]), 0);
+      if (P1 < 1) or (P1 > 65535) then
+      begin
+        MsgBox('Porta do Registro Automatico invalida (ou deixe em branco).', mbError, MB_OK);
+        Result := False;
+      end
+      else if Trim(CfgPage.Values[F_NVRIP]) = '' then
+      begin
+        MsgBox('Para usar o registro ativo, informe o IP do NVR na tela anterior.', mbError, MB_OK);
+        Result := False;
+      end;
+    end;
   end;
 end;
 
@@ -211,6 +251,22 @@ begin
       StringChangeEx(T, '@NVR_IP@', Trim(CfgPage.Values[F_NVRIP]), True);
       StringChangeEx(T, '@ONVIF_PORT@', CfgPage.Values[F_ONVIF], True);
       StringChangeEx(T, '@RTSP_PORT@', CfgPage.Values[F_RTSP], True);
+      { registro ativo no NVR }
+      if ArEnabled then
+        StringChangeEx(T, '@AR_ENABLED@', 'true', True)
+      else
+        StringChangeEx(T, '@AR_ENABLED@', 'false', True);
+      StringChangeEx(T, '@AR_SERVER@', Trim(CfgPage.Values[F_NVRIP]), True);
+      if Trim(ArPage.Values[0]) <> '' then
+        StringChangeEx(T, '@AR_PORT@', Trim(ArPage.Values[0]), True)
+      else
+        StringChangeEx(T, '@AR_PORT@', '7000', True);
+      if Trim(ArPage.Values[1]) <> '' then
+        StringChangeEx(T, '@AR_DEVID@', Trim(ArPage.Values[1]), True)
+      else
+        StringChangeEx(T, '@AR_DEVID@', '1', True);
+      StringChangeEx(T, '@AR_USER@', Trim(ArPage.Values[2]), True);
+      StringChangeEx(T, '@AR_PASS@', ArPage.Values[3], True);
       SaveStringToFile(ConfigFile, AnsiString(T), False);
     end;
   end;

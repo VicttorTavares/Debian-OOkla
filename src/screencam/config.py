@@ -13,7 +13,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 APP_NAME = "ScreenCamONVIF"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.5.0"
 
 
 def program_data_dir() -> Path:
@@ -132,6 +132,21 @@ class RecordingCfg:
 
 
 @dataclass
+class AutoRegisterCfg:
+    # Registro ativo no NVR (a camera conecta no gravador). Util quando a busca
+    # automatica nao funciona - tipicamente quando o PC e o NVR estao em sub-redes
+    # diferentes, ou ha NAT entre eles. EXPERIMENTAL: ver README (depende do
+    # protocolo do seu NVR Intelbras/Hikvision).
+    enabled: bool = False
+    server_ip: str = ""          # "End. servidor": IP do NVR (gravador)
+    server_port: int = 7000      # porta do "Registro Automatico" no NVR
+    device_id: str = "1"         # ID do dispositivo configurado no NVR
+    username: str = ""           # usuario de login no NVR (se o registro exigir)
+    password: str = ""           # senha de login no NVR (cifrada em disco via DPAPI)
+    target: str = "onvif"        # servico local exposto pelo tunel: onvif | rtsp
+
+
+@dataclass
 class ServiceCfg:
     # service  = serviço SYSTEM + agente por sessão (produção, usuário não fecha)
     # console  = tudo em um processo na sessão atual (dev / instalação simples)
@@ -156,6 +171,7 @@ class Config:
     activity: ActivityCfg = field(default_factory=ActivityCfg)
     recording: RecordingCfg = field(default_factory=RecordingCfg)
     service: ServiceCfg = field(default_factory=ServiceCfg)
+    autoregister: AutoRegisterCfg = field(default_factory=AutoRegisterCfg)
     path: Path | None = None
 
     @property
@@ -203,6 +219,7 @@ def load_config(path: str | Path | None = None) -> Config:
             if hasattr(obj, key):
                 setattr(obj, key, _coerce(value, getattr(obj, key)))
     cfg.auth.password = decode_password(cfg.auth.password)
+    cfg.autoregister.password = decode_password(cfg.autoregister.password)
     _validate(cfg)
     return cfg
 
@@ -239,26 +256,29 @@ def decode_password(stored: str, cipher=None) -> str:
         return ""
 
 
-def protect_config_file(path: str | Path | None = None, cipher=None) -> bool:
-    """Reescreve o config.ini cifrando a senha, se estiver em texto claro.
+# seções cujo campo "password" deve ser cifrado no disco
+_PASSWORD_SECTIONS = ("auth", "autoregister")
 
-    Preserva comentários e demais linhas. Retorna True se alterou o arquivo.
-    Não faz nada se a DPAPI nao estiver disponivel (ex.: fora do Windows) ou se
-    a senha ja estiver cifrada/vazia.
+
+def protect_config_file(path: str | Path | None = None, cipher=None) -> bool:
+    """Reescreve o config.ini cifrando as senhas em texto claro ([auth] e
+    [autoregister]). Preserva comentários e demais linhas. Retorna True se
+    alterou o arquivo. Não faz nada se a DPAPI nao estiver disponivel ou se nao
+    houver senha em texto claro a cifrar.
     """
     cipher = cipher or _default_cipher()
     p = Path(path) if path else default_config_path()
     if not p.exists() or not cipher.is_available():
         return False
     lines = p.read_text(encoding="utf-8-sig").splitlines(keepends=True)
-    in_auth = False
+    section = ""
     changed = False
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):
-            in_auth = stripped.lower() == "[auth]"
+            section = stripped[1:-1].strip().lower()
             continue
-        if not in_auth or "=" not in stripped or stripped.startswith((";", "#")):
+        if section not in _PASSWORD_SECTIONS or "=" not in stripped or stripped.startswith((";", "#")):
             continue
         key, _, rest = line.partition("=")
         if key.strip().lower() != "password":
@@ -271,16 +291,15 @@ def protect_config_file(path: str | Path | None = None, cipher=None) -> bool:
                 value = value[:idx]
         value = value.strip()
         if not value or is_encrypted(value):
-            return False  # nada a cifrar
+            continue  # esta senha ja esta ok; procura outras
         newline = "\n" if line.endswith("\n") else ""
         lines[i] = f"{key}= {encode_password(value, cipher)}{newline}"
         changed = True
-        break
     if changed:
         tmp = p.with_suffix(p.suffix + ".tmp")
         tmp.write_text("".join(lines), encoding="utf-8")
         os.replace(tmp, p)
-        log.info("Senha do NVR cifrada com DPAPI em %s", p)
+        log.info("Senha(s) cifrada(s) com DPAPI em %s", p)
     return changed
 
 
@@ -320,6 +339,18 @@ def _validate(cfg: Config) -> None:
     if cfg.auth.enabled and 0 < len(cfg.auth.password) < 10:
         log.warning("A senha tem menos de 10 caracteres; alguns NVRs (Intelbras/Hikvision) "
                     "exigem 10. Se a camera nao autenticar, use uma senha de 10 caracteres.")
+    ar = cfg.autoregister
+    ar.server_ip = ar.server_ip.strip()
+    if ar.target not in ("onvif", "rtsp"):
+        ar.target = "onvif"
+    ar.server_port = max(1, min(65535, ar.server_port))
+    if ar.enabled and (not ar.server_ip or not _valid_ip(ar.server_ip)):
+        log.warning("autoregister habilitado mas server_ip invalido/ausente (%r); desativando",
+                    ar.server_ip)
+        ar.enabled = False
+    # o NVR do auto-registro tambem e o NVR autorizado para leitura, se nao houver outro
+    if ar.server_ip and _valid_ip(ar.server_ip) and not cfg.network.nvr_ip:
+        cfg.network.nvr_ip = ar.server_ip
 
 
 def _valid_ip(text: str) -> bool:

@@ -80,6 +80,10 @@ class ServerCore:
                                    cfg.network.advertise_ip, cfg.network.bind_ip) \
             if cfg.network.discovery else None
         self.recorder = LocalRecorder(cfg, self._local_rtsp()) if cfg.recording.enabled else None
+        self.autoregister = None
+        if cfg.autoregister.enabled:
+            from .autoregister import AutoRegister
+            self.autoregister = AutoRegister(cfg, cfg.network.onvif_port, cfg.network.rtsp_port)
         self.active = False
 
     def _local_rtsp(self) -> str:
@@ -129,6 +133,8 @@ class ServerCore:
             "rtsp_port": self.cfg.network.rtsp_port,
             "nvr_ip": self.cfg.network.nvr_ip or "qualquer (rede local)",
             "recording": bool(self.recorder),
+            "autoregister": (f"{self.cfg.autoregister.server_ip}:{self.cfg.autoregister.server_port}"
+                             if self.autoregister else "desativado"),
         }
 
     def start(self) -> None:
@@ -151,10 +157,14 @@ class ServerCore:
                 self.discovery = None
         if self.recorder:
             self.recorder.start()
+        if self.autoregister:
+            self.autoregister.start()
 
     def stop(self) -> None:
         log.info("Encerrando serviço...")
         self.broker.set_motion(False)
+        if self.autoregister:
+            self.autoregister.stop()
         if self.recorder:
             self.recorder.stop()
         if self.discovery:

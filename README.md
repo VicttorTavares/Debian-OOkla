@@ -49,7 +49,7 @@ o agente segue a sessão ativa — todos que usam a máquina são gravados.
 
 ## Instalação (administrador)
 
-1. Execute `ScreenCamONVIF-Setup-1.4.0.exe` como administrador.
+1. Execute `ScreenCamONVIF-Setup-1.5.0.exe` como administrador.
 2. No assistente, informe:
    - **nome do dispositivo, usuário e senha** (a senha deve ter **10 caracteres** — exigência
      de gravadores Intelbras/Hikvision —, com confirmação);
@@ -134,6 +134,38 @@ em qualquer câmera ONVIF.
 > Em ambos, se o NVR só gravar "contínuo", ele ainda grava — mas sem a economia do gatilho
 > por movimento. Vale conferir se o canal está em modo *Evento*.
 
+## O NVR não encontra a câmera na busca automática
+
+A busca automática (WS-Discovery) usa **multicast**, que **não cruza sub-redes/VLANs**. Se o
+NVR está em `192.168.25.x` e o PC em `192.168.26.x`, a busca **não acha** a câmera — isso é
+esperado. Faça assim, na ordem:
+
+1. **Cadastre manualmente** no NVR (funciona entre sub-redes, desde que haja roteamento):
+   protocolo **ONVIF**, **IP do computador**, porta de gerenciamento = **porta ONVIF** (8000),
+   usuário/senha da instalação. É a solução mais simples e confiável.
+2. **Informe o IP do NVR** na instalação (ou em `[network] nvr_ip`). Sem ele, o firewall é
+   liberado só para a **sub-rede local** (`localsubnet`) e **bloquearia** um NVR de outra
+   sub-rede. Com o IP preenchido, o firewall e a leitura RTSP/ONVIF são liberados para o NVR.
+3. **Teste a conectividade**: do NVR, veja se alcança `IP-DO-PC:8000`; do PC, `ping IP-DO-NVR`.
+   Se não houver rota entre as sub-redes, nem o cadastro manual funciona — aí use o passo a seguir.
+
+### Registro ativo no NVR (experimental)
+
+Quando **não há rota** do NVR até o PC (NAT, sub-redes isoladas), o modelo passivo não serve.
+Nesse caso o dispositivo pode **conectar no NVR** — é a tela *End. servidor / ID dispositivo*
+das câmeras Intelbras/Dahua. A instalação tem a página **"Registro ativo no NVR"**; preencha a
+**porta do Registro Automático** do NVR (deixe em branco para não usar), o **ID do dispositivo**
+e, se exigido, **usuário/senha do NVR**. No `config.ini` isso fica em `[autoregister]`.
+
+O programa então conecta ao NVR e abre um **túnel** até o serviço ONVIF local. **É experimental:**
+o enquadramento exato do handshake varia por modelo de NVR; o transporte (conectar, reconectar,
+repassar os dados) está implementado e testado, mas pode ser preciso ajustar o preâmbulo para o
+seu gravador. Se precisar, uma **captura de pacotes** (Wireshark) de uma câmera Intelbras real
+registrando-se no seu NVR permite acertar o formato — me envie que eu ajusto.
+
+> Dica de diagnóstico: `ScreenCamONVIF.exe status` mostra o NVR autorizado e o estado do
+> registro ativo; os logs em `C:\ProgramData\ScreenCamONVIF\logs` registram cada tentativa.
+
 ## Compressão H.265 e economia de armazenamento
 
 O vídeo sai em **H.265 (HEVC)** por padrão. O ONVIF original (Media1) não tem H.265 na
@@ -198,6 +230,9 @@ Principais opções (o arquivo completo é comentado):
 | `[service]` | `mode` | `service` | `service` (SYSTEM + agente) ou `console` (1 processo) |
 | | `capture_scope` | `active_console` | Canal único; segue a sessão ativa |
 | | `visible_indicator` | `false` | Ícone discreto na bandeja do usuário |
+| `[autoregister]` | `enabled` | `false` | Registro ativo no NVR (experimental; ver acima) |
+| | `server_ip` / `server_port` | *(vazio)* / `7000` | NVR e porta do Registro Automático |
+| | `device_id` | `1` | ID do dispositivo no NVR |
 
 ## Multiusuário e sessões
 
@@ -222,7 +257,7 @@ No Windows 10/11 com Python 3.11+:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build.ps1
-# => installer\Output\ScreenCamONVIF-Setup-1.4.0.exe
+# => installer\Output\ScreenCamONVIF-Setup-1.5.0.exe
 ```
 
 O script baixa o **FFmpeg** (GitHub/BtbN, com gyan.dev como alternativa, repetição e
@@ -251,6 +286,7 @@ src/screencam/
   sessions.py        gerência de sessões (lógica) + backend WTS do Windows
   agent.py           entrada do agente de captura por sessão
   control.py         canal de controle loopback serviço↔agentes (atividade)
+  autoregister.py    registro ativo no NVR (tunel reverso, experimental)
   activity.py        detecção de mouse/teclado (GetLastInputInfo)
   audio.py           captura WASAPI loopback + microfone e mixagem
   streamer.py        FFmpeg (captura/encode) e MediaMTX (RTSP), com watchdog
@@ -258,7 +294,7 @@ src/screencam/
   recorder.py        gravação local + retenção
   snapshot.py        JPEG para GetSnapshotUri
   winapi.py          ctypes do Windows (DPI, monitores, inatividade, mutex)
-  dpapi.py           cifragem da senha do NVR (CryptProtectData, escopo maquina)
+  dpapi.py           cifragem das senhas (CryptProtectData, escopo maquina)
   tray.py            ícone opcional na bandeja (indicador discreto)
   onvif/server.py    serviços Device, Media, Media2, Events (SOAP 1.2)
   onvif/events.py    PullPoint / Notify, eventos de movimento

@@ -592,3 +592,81 @@ def test_invalid_nvr_ip_is_cleared():
     cfg.network.nvr_ip = "10.0.0.7"
     _validate(cfg)
     assert cfg.network.nvr_ip == "10.0.0.7"
+
+
+# ---------------------------------------------------------------- registro ativo no NVR
+
+def test_autoregister_tunnel_bridges_both_directions():
+    import socket
+    import threading
+    import time
+    from screencam.autoregister import bridge, build_preamble
+
+    captured = {}
+
+    def fake_nvr(listener):
+        conn, _ = listener.accept()
+        conn.settimeout(3)
+        captured["preamble"] = conn.recv(100)
+        conn.sendall(b"GET /onvif/device_service HTTP/1.0\r\n\r\n")
+        captured["reply"] = conn.recv(100)
+        conn.close()
+
+    def fake_local(listener):
+        conn, _ = listener.accept()
+        conn.settimeout(3)
+        captured["local_req"] = conn.recv(100)
+        conn.sendall(b"HTTP/1.0 200 OK\r\nONVIF-OK\r\n")
+        conn.close()
+
+    nvr_l = socket.socket(); nvr_l.bind(("127.0.0.1", 0)); nvr_l.listen(1)
+    loc_l = socket.socket(); loc_l.bind(("127.0.0.1", 0)); loc_l.listen(1)
+    threading.Thread(target=fake_nvr, args=(nvr_l,), daemon=True).start()
+    threading.Thread(target=fake_local, args=(loc_l,), daemon=True).start()
+
+    nvr_sock = socket.create_connection(("127.0.0.1", nvr_l.getsockname()[1]))
+    bridge(nvr_sock, ("127.0.0.1", loc_l.getsockname()[1]), preamble=build_preamble("7"))
+    time.sleep(0.2)
+    assert captured["preamble"] == b"deviceID:7\r\n"
+    assert b"device_service" in captured["local_req"]
+    assert b"ONVIF-OK" in captured["reply"]
+
+
+def test_build_preamble_empty_when_no_device_id():
+    from screencam.autoregister import build_preamble
+    assert build_preamble("") == b""
+    assert build_preamble("  ") == b""
+    assert build_preamble("5") == b"deviceID:5\r\n"
+
+
+def test_autoregister_disabled_when_ip_invalid():
+    from screencam.config import Config, _validate
+    cfg = Config()
+    cfg.autoregister.enabled = True
+    cfg.autoregister.server_ip = "sem-ip"
+    _validate(cfg)
+    assert cfg.autoregister.enabled is False
+
+
+def test_autoregister_server_ip_fills_nvr_ip():
+    from screencam.config import Config, _validate
+    cfg = Config()
+    cfg.autoregister.server_ip = "192.168.25.200"
+    _validate(cfg)
+    assert cfg.network.nvr_ip == "192.168.25.200"  # mesmo NVR para leitura/firewall
+
+
+def test_dpapi_protects_both_passwords(tmp_path):
+    from screencam.config import protect_config_file, is_encrypted
+    cfg = tmp_path / "config.ini"
+    cfg.write_text(
+        "[auth]\npassword = CamSenha123\n\n"
+        "[autoregister]\nserver_ip = 192.168.0.9\npassword = NvrSenha456\n",
+        encoding="utf-8")
+    c = FakeCipher()
+    assert protect_config_file(cfg, cipher=c) is True
+    text = cfg.read_text(encoding="utf-8")
+    assert "CamSenha123" not in text and "NvrSenha456" not in text
+    lines = [l for l in text.splitlines() if l.startswith("password")]
+    assert len(lines) == 2 and all(is_encrypted(l.split("=", 1)[1].strip()) for l in lines)
+    assert protect_config_file(cfg, cipher=c) is False  # idempotente
