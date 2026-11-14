@@ -693,3 +693,40 @@ def test_servercore_warns_on_wrong_subnet_nvr(caplog):
     with caplog.at_level(_logging.WARNING):
         core._diagnose_network()
     assert any("NAO esta na mesma sub-rede" in r.message for r in caplog.records)
+
+
+def test_geometry_survives_session0_without_monitor(monkeypatch):
+    """Servico na sessao 0 do Windows nao tem monitor (0x0): nao pode quebrar o inicio."""
+    from screencam import winapi
+    from screencam.streamer import compute_geometry
+    monkeypatch.setattr(winapi, "capture_rect", lambda monitor: winapi.Rect(0, 0, 0, 0))
+    g = compute_geometry(Config())
+    assert (g.out_w, g.out_h) == (1920, 1080)
+
+    def boom(monitor):
+        raise OSError("sem desktop")
+    monkeypatch.setattr(winapi, "capture_rect", boom)
+    assert compute_geometry(Config()).out_w == 1920
+
+
+def test_server_core_builds_without_monitor(monkeypatch):
+    from screencam import winapi
+    from screencam.app import ServerCore
+    monkeypatch.setattr(winapi, "capture_rect", lambda monitor: winapi.Rect(0, 0, 0, 0))
+    cfg = Config()
+    cfg.network.onvif_port = _free_port()
+    cfg.network.rtsp_port = _free_port()
+    cfg.network.discovery = False
+    cfg.service.control_port = 0
+    ServerCore(cfg)  # antes: ZeroDivisionError
+
+
+def test_doctor_runs_and_reports(tmp_path, capsys):
+    from screencam.doctor import run_doctor
+    ini = tmp_path / "config.ini"
+    ini.write_text("[auth]\nusername = admin\npassword = Curta1\n[network]\nnvr_ip = 192.168.25.200\n"
+                   f"onvif_port = {_free_port()}\nrtsp_port = {_free_port()}\n", encoding="utf-8")
+    run_doctor(str(ini))
+    out = capsys.readouterr().out
+    assert "diagnostico" in out and "[AVISO] Senha" in out  # senha < 10 e sinalizada
+    assert "Porta ONVIF" in out and "resumo" in out

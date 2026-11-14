@@ -100,6 +100,7 @@ def main(argv=None) -> int:
     for name in ("install-service", "uninstall-service", "start", "stop", "status"):
         common(sub.add_parser(name))
     common(sub.add_parser("protect-config", help="cifra a senha do NVR no config.ini (DPAPI)"))
+    common(sub.add_parser("doctor", help="diagnostico completo (config, portas, NVR, servico)"))
 
     # 'agent' precisa dos argumentos crus
     if argv is None:
@@ -133,6 +134,10 @@ def main(argv=None) -> int:
     if args.cmd == "protect-config":
         return _protect_config(args)
 
+    if args.cmd == "doctor":
+        from .doctor import run_doctor
+        return run_doctor(args.config)
+
     return _service_control(args.cmd, args)
 
 
@@ -159,32 +164,40 @@ def _service_control(cmd: str, args) -> int:
     if not winapi.IS_WINDOWS:
         print("Comandos de servico sao exclusivos do Windows.")
         return 1
-    from .service import install_service
+    from . import service as svc
     try:
         if cmd == "install-service":
-            install_service(args.config)
+            svc.install_service(args.config)
             print("Agora inicie com: ScreenCamONVIF start")
             return 0
+        import win32service
         import win32serviceutil
-        name = "ScreenCamONVIF"
+        name = svc.SERVICE_NAME
         if cmd == "uninstall-service":
-            win32serviceutil.StopService(name)
-            win32serviceutil.RemoveService(name)
+            svc.remove_service()
             print("Servico removido.")
         elif cmd == "start":
-            win32serviceutil.StartService(name)
-            print("Servico iniciado.")
+            ok, msg = svc.start_service_wait()
+            print(msg)
+            if not ok:
+                print("---- ultimas linhas do log do servico ----")
+                print(svc.tail_service_log())
+                print("---- rode 'ScreenCamONVIF.exe doctor' para um diagnostico completo ----")
+                return 1
         elif cmd == "stop":
-            win32serviceutil.StopService(name)
+            svc.stop_service_quiet()
             print("Servico parado.")
         elif cmd == "status":
-            import win32service
             state = win32serviceutil.QueryServiceStatus(name)[1]
             names = {win32service.SERVICE_RUNNING: "em execucao",
                      win32service.SERVICE_STOPPED: "parado",
                      win32service.SERVICE_START_PENDING: "iniciando",
                      win32service.SERVICE_STOP_PENDING: "parando"}
             print(f"Servico {name}: {names.get(state, state)}")
+            if state != win32service.SERVICE_RUNNING:
+                print("---- ultimas linhas do log do servico ----")
+                print(svc.tail_service_log(10))
+                return 1
         return 0
     except Exception as exc:
         print(f"Falha no comando '{cmd}': {exc}")

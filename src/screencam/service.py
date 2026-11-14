@@ -152,12 +152,83 @@ def build_service_class(config_path: str | None = None):
     return ScreenCamService, win32serviceutil
 
 
-def install_service(config_path: str | None = None) -> int:
-    cls, win32serviceutil = build_service_class(config_path)
+SERVICE_NAME = "ScreenCamONVIF"
+
+
+def service_log_path() -> Path:
+    return program_data_dir() / "logs" / "service.log"
+
+
+def tail_service_log(lines: int = 25) -> str:
+    try:
+        text = service_log_path().read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "(log do servico ainda nao existe em %s)" % service_log_path()
+    return "\n".join(text.splitlines()[-lines:])
+
+
+def service_exists() -> bool:
     import win32service
+    import win32serviceutil
+    try:
+        win32serviceutil.QueryServiceStatus(SERVICE_NAME)
+        return True
+    except win32service.error:
+        return False
+
+
+def stop_service_quiet(timeout: int = 20) -> None:
+    """Para o servico se estiver rodando; nao falha se ja estiver parado/inexistente."""
+    import win32service
+    import win32serviceutil
+    try:
+        state = win32serviceutil.QueryServiceStatus(SERVICE_NAME)[1]
+        if state != win32service.SERVICE_STOPPED:
+            win32serviceutil.StopService(SERVICE_NAME)
+            win32serviceutil.WaitForServiceStatus(SERVICE_NAME, win32service.SERVICE_STOPPED, timeout)
+    except Exception as exc:
+        log.debug("stop_service_quiet: %s", exc)
+
+
+def remove_service() -> None:
+    import time
+    import win32serviceutil
+    stop_service_quiet()
+    if service_exists():
+        win32serviceutil.RemoveService(SERVICE_NAME)
+        for _ in range(20):  # o SCM remove de forma assincrona
+            if not service_exists():
+                break
+            time.sleep(0.5)
+
+
+def start_service_wait(timeout: int = 30) -> tuple[bool, str]:
+    """Inicia o servico e espera ficar em execucao. Retorna (ok, mensagem)."""
+    import win32service
+    import win32serviceutil
+    try:
+        win32serviceutil.StartService(SERVICE_NAME)
+        win32serviceutil.WaitForServiceStatus(SERVICE_NAME, win32service.SERVICE_RUNNING, timeout)
+        return True, "Servico em execucao."
+    except Exception as exc:
+        try:
+            state = win32serviceutil.QueryServiceStatus(SERVICE_NAME)[1]
+        except Exception:
+            state = "?"
+        return False, f"O servico nao ficou em execucao (estado={state}): {exc}"
+
+
+def install_service(config_path: str | None = None) -> int:
+    """Instala o servico (idempotente: se ja existir, remove e reinstala)."""
+    cls, win32serviceutil = build_service_class(config_path)
+    import subprocess
+    import win32service
+    if service_exists():
+        print("Servico ja existe; reinstalando...")
+        remove_service()
     frozen = getattr(sys, "frozen", False)
-    # Em executável empacotado (PyInstaller), o SCM roda "<exe> service-run";
-    # fora dele, o PythonService.exe do pywin32 localiza a classe pelo módulo.
+    # Em executavel empacotado (PyInstaller), o SCM roda "<exe> service-run";
+    # fora dele, o PythonService.exe do pywin32 localiza a classe pelo modulo.
     kwargs = dict(startType=win32service.SERVICE_AUTO_START, description=cls._svc_description_)
     if frozen:
         kwargs["exeName"] = sys.executable
@@ -165,7 +236,6 @@ def install_service(config_path: str | None = None) -> int:
     win32serviceutil.InstallService(
         f"{cls.__module__}.{cls.__name__}", cls._svc_name_, cls._svc_display_name_, **kwargs)
     # reinicia sozinho caso o processo caia
-    import subprocess
     subprocess.run(["sc", "failure", cls._svc_name_, "reset=", "86400",
                     "actions=", "restart/5000/restart/5000/restart/10000"], check=False)
     print(f"Servico '{cls._svc_name_}' instalado.")

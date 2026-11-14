@@ -41,6 +41,9 @@ Source: "..\vendor\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\vendor\mediamtx.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\vendor\LICENSE-mediamtx.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "config.template.ini"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\scripts\reparar.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
+Source: "..\scripts\verificar-instalacao.ps1"; DestDir: "{app}\tools"; Flags: ignoreversion
+Source: "..\docs\GUIA-DE-INSTALACAO.md"; DestDir: "{app}\docs"; Flags: ignoreversion
 
 [Dirs]
 Name: "{#DataDir}"
@@ -49,7 +52,8 @@ Name: "{#DataDir}\runtime"; Permissions: users-readexec
 
 [Icons]
 ; Atalhos administrativos (o programa roda como servico; nao ha janela para o usuario comum)
-Name: "{group}\Estado do servico"; Filename: "{app}\{#AppExe}"; Parameters: "status"
+Name: "{group}\Reparar e diagnosticar (admin)"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\tools\reparar.ps1"""
+Name: "{group}\Guia de instalacao"; Filename: "{sys}\notepad.exe"; Parameters: """{app}\docs\GUIA-DE-INSTALACAO.md"""
 Name: "{group}\Editar configuracao (admin)"; Filename: "{sys}\notepad.exe"; Parameters: """{#DataDir}\config.ini"""
 Name: "{group}\Desinstalar {#AppName}"; Filename: "{uninstallexe}"
 
@@ -58,14 +62,6 @@ Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall delete rule name=""ScreenCam ONVIF RTSP"""; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF"" dir=in action=allow program=""{app}\{#AppExe}"" enable=yes profile=any remoteip={code:GetFirewallScope}"; Flags: runhidden; Tasks: firewall
 Filename: "{sys}\netsh.exe"; Parameters: "advfirewall firewall add rule name=""ScreenCam ONVIF RTSP"" dir=in action=allow program=""{app}\mediamtx.exe"" enable=yes profile=any remoteip={code:GetFirewallScope}"; Flags: runhidden; Tasks: firewall
-; Trava o config.ini (contem a senha do NVR): apenas SYSTEM e Administradores leem
-Filename: "{sys}\icacls.exe"; Parameters: """{#DataDir}\config.ini"" /inheritance:r /grant:r ""*S-1-5-18:F"" ""*S-1-5-32-544:F"""; Flags: runhidden
-; Cifra a senha do NVR no disco (DPAPI, escopo de maquina)
-Filename: "{app}\{#AppExe}"; Parameters: "protect-config"; Flags: runhidden waituntilterminated
-; Instala e inicia o servico (o usuario comum nao consegue para-lo)
-Filename: "{app}\{#AppExe}"; Parameters: "install-service"; Flags: runhidden waituntilterminated
-Filename: "{app}\{#AppExe}"; Parameters: "start"; Flags: runhidden waituntilterminated
-Filename: "{app}\{#AppExe}"; Parameters: "status"; Description: "Ver estado do servico"; Flags: postinstall skipifsilent runascurrentuser
 
 [UninstallRun]
 Filename: "{app}\{#AppExe}"; Parameters: "uninstall-service"; Flags: runhidden waituntilterminated; RunOnceId: "SvcRemove"
@@ -86,6 +82,50 @@ const
 var
   CfgPage: TInputQueryWizardPage;
   ArPage: TInputQueryWizardPage;
+  ServiceOk: Boolean;
+
+{ Le parametros de linha de comando no formato /NOME=valor (instalacao silenciosa) }
+function GetCmdParam(const Name, Default: String): String;
+var
+  i: Integer;
+  P, Prefix: String;
+begin
+  Result := Default;
+  Prefix := UpperCase(Name) + '=';
+  for i := 1 to ParamCount do
+  begin
+    P := ParamStr(i);
+    if Pos(Prefix, UpperCase(P)) = 1 then
+    begin
+      Result := Copy(P, Length(Prefix) + 1, MaxInt);
+      Exit;
+    end;
+  end;
+end;
+
+function ForceConfig: Boolean;
+begin
+  Result := GetCmdParam('/FORCECONFIG', '') = '1';
+end;
+
+function RunApp(const Params: String): Integer;
+var
+  Code: Integer;
+begin
+  if not Exec(ExpandConstant('{app}\{#AppExe}'), Params, ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+    Code := -1;
+  Log(Format('{#AppExe} %s -> codigo %d', [Params, Code]));
+  Result := Code;
+end;
+
+procedure RunQuiet(const Exe, Params: String);
+var
+  Code: Integer;
+begin
+  if not Exec(Exe, Params, '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Code := -1;
+  Log(Format('%s %s -> codigo %d', [Exe, Params, Code]));
+end;
 
 function ConfigFile: String;
 begin
@@ -145,13 +185,14 @@ begin
   CfgPage.Add('IP do NVR/gravador (opcional; restringe o acesso a ele):', False);
   CfgPage.Add('Porta ONVIF (informe esta porta como "gerenciamento" no NVR):', False);
   CfgPage.Add('Porta RTSP:', False);
-  CfgPage.Values[F_NAME] := 'ScreenCam-{computer}';
-  CfgPage.Values[F_USER] := 'admin';
-  CfgPage.Values[F_PASS] := '';
-  CfgPage.Values[F_CONFIRM] := '';
-  CfgPage.Values[F_NVRIP] := '';
-  CfgPage.Values[F_ONVIF] := '8000';
-  CfgPage.Values[F_RTSP] := '8554';
+  { Valores padrao; podem ser sobrescritos por /NAME= /USER= /PASS= /NVRIP= /ONVIFPORT= /RTSPPORT= }
+  CfgPage.Values[F_NAME] := GetCmdParam('/NAME', 'ScreenCam-{computer}');
+  CfgPage.Values[F_USER] := GetCmdParam('/USER', 'admin');
+  CfgPage.Values[F_PASS] := GetCmdParam('/PASS', '');
+  CfgPage.Values[F_CONFIRM] := GetCmdParam('/PASS', '');
+  CfgPage.Values[F_NVRIP] := GetCmdParam('/NVRIP', '');
+  CfgPage.Values[F_ONVIF] := GetCmdParam('/ONVIFPORT', '8000');
+  CfgPage.Values[F_RTSP] := GetCmdParam('/RTSPPORT', '8554');
 
   ArPage := CreateInputQueryPage(CfgPage.ID,
     'Registro ativo no NVR (opcional)',
@@ -164,16 +205,16 @@ begin
   ArPage.Add('ID do dispositivo (no NVR):', False);
   ArPage.Add('Usuario no NVR (opcional):', False);
   ArPage.Add('Senha no NVR (opcional):', True);
-  ArPage.Values[0] := '';
-  ArPage.Values[1] := '1';
-  ArPage.Values[2] := '';
-  ArPage.Values[3] := '';
+  ArPage.Values[0] := GetCmdParam('/ARPORT', '');
+  ArPage.Values[1] := GetCmdParam('/ARDEVID', '1');
+  ArPage.Values[2] := GetCmdParam('/ARUSER', '');
+  ArPage.Values[3] := GetCmdParam('/ARPASS', '');
 end;
 
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   { Em atualizacoes, mantem a configuracao existente }
-  Result := ((PageID = CfgPage.ID) or (PageID = ArPage.ID)) and FileExists(ConfigFile);
+  Result := ((PageID = CfgPage.ID) or (PageID = ArPage.ID)) and FileExists(ConfigFile) and (not ForceConfig);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -235,12 +276,31 @@ begin
   end;
 end;
 
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  { No modo silencioso as validacoes das paginas nao rodam: valida aqui }
+  if WizardSilent and ((not FileExists(ConfigFile)) or ForceConfig) then
+  begin
+    if Length(CfgPage.Values[F_PASS]) < 10 then
+      Result := 'Informe /PASS= com 10 caracteres (exigencia do gravador).'
+    else if (Trim(CfgPage.Values[F_NVRIP]) <> '') and (not IsValidIPv4(Trim(CfgPage.Values[F_NVRIP]))) then
+      Result := 'Valor invalido em /NVRIP= (use um IPv4, ex.: 192.168.25.200).';
+  end;
+  if Result <> '' then Exit;
+  { Libera os arquivos: para o servico e processos antes de atualizar/reinstalar }
+  RunQuiet(ExpandConstant('{sys}\sc.exe'), 'stop ScreenCamONVIF');
+  Sleep(2500);
+  RunQuiet(ExpandConstant('{sys}\taskkill.exe'), '/F /IM mediamtx.exe');
+  RunQuiet(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}');
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   S: AnsiString;
   T: String;
 begin
-  if (CurStep = ssPostInstall) and not FileExists(ConfigFile) then
+  if (CurStep = ssPostInstall) and ((not FileExists(ConfigFile)) or ForceConfig) then
   begin
     if LoadStringFromFile(ExpandConstant('{app}\config.template.ini'), S) then
     begin
@@ -270,4 +330,25 @@ begin
       SaveStringToFile(ConfigFile, AnsiString(T), False);
     end;
   end;
+  if CurStep = ssPostInstall then
+  begin
+    { config.ini contem a senha do NVR: so SYSTEM e Administradores leem }
+    RunQuiet(ExpandConstant('{sys}\icacls.exe'),
+      '"' + ConfigFile + '" /inheritance:r /grant:r "*S-1-5-18:F" "*S-1-5-32-544:F"');
+    RunApp('protect-config');
+    ServiceOk := (RunApp('install-service') = 0) and (RunApp('start') = 0);
+    if ServiceOk then
+      Log('Servico instalado e em execucao.')
+    else
+      Log('ATENCAO: o servico nao ficou em execucao.');
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpFinished) and (not ServiceOk) then
+    MsgBox('A instalacao terminou, mas o SERVICO nao ficou em execucao.' + #13#10 + #13#10 +
+      'Abra o menu Iniciar > ScreenCam ONVIF > "Reparar e diagnosticar (admin)" ' +
+      'ou consulte o guia em ' + ExpandConstant('{app}\docs\GUIA-DE-INSTALACAO.md') + '.',
+      mbError, MB_OK);
 end;

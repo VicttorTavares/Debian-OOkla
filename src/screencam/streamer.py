@@ -52,7 +52,14 @@ def compute_geometry(cfg: Config) -> VideoGeometry:
     if cfg.video.source == "test":
         r = winapi.Rect(0, 0, 1920, 1080)
     else:
-        r = winapi.capture_rect(cfg.video.monitor)
+        try:
+            r = winapi.capture_rect(cfg.video.monitor)
+        except Exception:  # sem sessao interativa (ex.: servico na sessao 0)
+            r = winapi.Rect(0, 0, 0, 0)
+    # O servico roda na sessao 0, que nao tem monitor: o Windows devolve 0x0.
+    # Usa um tamanho padrao (o agente de captura define o real na sessao do usuario).
+    if r.width < 16 or r.height < 16:
+        r = winapi.Rect(0, 0, 1920, 1080)
     w, h = r.width - r.width % 2, r.height - r.height % 2
     f = min(1.0, cfg.video.max_width / w, cfg.video.max_height / h)
     ow = int(w * f) // 2 * 2
