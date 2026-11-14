@@ -212,9 +212,15 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
 O script baixa o **FFmpeg** (gyan.dev) e o **MediaMTX v1.21.3**, roda os testes, gera o
-executável com PyInstaller e compila o instalador com Inno Setup. O workflow
+executável com PyInstaller (aplicativo de **console**, para os comandos de admin imprimirem;
+o serviço e o agente não mostram janela) e compila o instalador com Inno Setup. O workflow
 `.github/workflows/build-windows.yml` faz o mesmo no GitHub Actions e publica o
-instalador como artefato.
+instalador como artefato — a forma mais simples de obter o `.exe` sem uma máquina Windows à mão.
+
+> O empacotamento inclui `--collect-submodules screencam` (módulos de carga tardia) e os
+> *hidden imports* do pywin32 (serviço). Caso o Inno Setup não esteja instalado, o script o
+> instala via winget/choco. Requer PowerShell como administrador apenas se for testar o
+> serviço na mesma máquina.
 
 Para executar a partir do código-fonte: `pip install -r requirements.txt`, coloque
 `ffmpeg.exe` e `mediamtx.exe` em `vendor\` e rode `python -m screencam console` dentro de

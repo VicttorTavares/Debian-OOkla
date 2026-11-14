@@ -44,6 +44,10 @@ $py = Join-Path $root ".venv\Scripts\python.exe"
 & $py -m pip install -r requirements-dev.txt --quiet
 if ($LASTEXITCODE -ne 0) { throw "pip install falhou" }
 
+# Registra as DLLs do pywin32 (pywintypesXX.dll/pythoncomXX.dll) para o servico empacotar
+$pywin32pi = Join-Path $root ".venv\Scripts\pywin32_postinstall.py"
+if (Test-Path $pywin32pi) { & $py $pywin32pi -install -silent | Out-Null }
+
 if (-not $SkipTests) {
     Write-Host "==> Testes"
     & $py -m pytest -q tests
@@ -53,11 +57,18 @@ if (-not $SkipTests) {
 # ---------------------------------------------------------------- executavel
 Write-Host "==> PyInstaller"
 & $py scripts\make_icon.py
-& $py -m PyInstaller --noconfirm --clean --windowed --name ScreenCamONVIF `
+# Console (NAO --windowed): os comandos de admin (status/start/stop/protect-config)
+# precisam imprimir no terminal. O servico roda na sessao 0 e o agente e lancado com
+# CREATE_NO_WINDOW, entao nenhum console aparece para o usuario.
+# --collect-submodules screencam: inclui modulos importados tardiamente (service, agent,
+# sessions, control, dpapi, onvif.*), que a analise estatica do PyInstaller nao veria.
+& $py -m PyInstaller --noconfirm --clean --console --name ScreenCamONVIF `
     --icon installer\icon.ico --paths src `
+    --collect-submodules screencam `
     --collect-data soundcard --hidden-import pystray._win32 `
     --hidden-import win32timezone --hidden-import servicemanager `
     --hidden-import win32service --hidden-import win32serviceutil --hidden-import win32event `
+    --hidden-import win32api --hidden-import pywintypes --hidden-import pythoncom `
     scripts\launcher.py
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller falhou" }
 
