@@ -670,3 +670,26 @@ def test_dpapi_protects_both_passwords(tmp_path):
     lines = [l for l in text.splitlines() if l.startswith("password")]
     assert len(lines) == 2 and all(is_encrypted(l.split("=", 1)[1].strip()) for l in lines)
     assert protect_config_file(cfg, cipher=c) is False  # idempotente
+
+
+def test_same_subnet24():
+    from screencam.config import same_subnet24
+    assert same_subnet24("192.168.25.197", "192.168.25.200") is True
+    assert same_subnet24("192.168.26.197", "192.168.25.200") is False  # erro de digitacao 26 vs 25
+    assert same_subnet24("10.0.0.5", "10.0.1.5") is False
+    assert same_subnet24("lixo", "192.168.25.1") is False
+
+
+def test_servercore_warns_on_wrong_subnet_nvr(caplog):
+    import logging as _logging
+    cfg = Config()
+    cfg.network.onvif_port = _free_port()
+    cfg.network.rtsp_port = _free_port()
+    cfg.network.discovery = False
+    cfg.service.control_port = 0
+    cfg.network.nvr_ip = "8.8.8.8"  # claramente fora da sub-rede local
+    from screencam.app import ServerCore
+    core = ServerCore(cfg)
+    with caplog.at_level(_logging.WARNING):
+        core._diagnose_network()
+    assert any("NAO esta na mesma sub-rede" in r.message for r in caplog.records)

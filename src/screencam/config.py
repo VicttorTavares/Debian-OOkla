@@ -362,6 +362,19 @@ def _valid_ip(text: str) -> bool:
         return False
 
 
+def same_subnet24(ip_a: str, ip_b: str) -> bool:
+    """True se os dois IPv4 estão na mesma sub-rede /24 (ex.: 192.168.25.x)."""
+    try:
+        import ipaddress
+        a = ipaddress.ip_address(ip_a)
+        b = ipaddress.ip_address(ip_b)
+        if a.version != 4 or b.version != 4:
+            return False
+        return int(a) >> 8 == int(b) >> 8
+    except ValueError:
+        return False
+
+
 # ---------------------------------------------------------------- agente
 
 # Seções entregues ao agente de captura. NUNCA inclui [auth] (senha do NVR) nem

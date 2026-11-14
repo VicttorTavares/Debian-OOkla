@@ -146,6 +146,7 @@ class ServerCore:
                  self.cfg.network.nvr_ip or "qualquer (rede local)",
                  self.cfg.video.codec.upper(), self.cfg.video.encoder,
                  self.cfg.audio.codec if self.cfg.audio.enabled else "desativado")
+        self._diagnose_network()
         self.mediamtx.start()
         self.control.start()
         self.onvif.start()
@@ -159,6 +160,20 @@ class ServerCore:
             self.recorder.start()
         if self.autoregister:
             self.autoregister.start()
+
+    def _diagnose_network(self) -> None:
+        """Loga o IP local e avisa se o IP do NVR parece errado (sub-rede diferente)."""
+        from .config import same_subnet24
+        from .onvif.discovery import local_ip_for
+        nvr = self.cfg.network.nvr_ip
+        local = local_ip_for(nvr or "8.8.8.8")
+        log.info("Rede: IP local deste PC = %s; NVR autorizado = %s",
+                 local, nvr or "qualquer (sub-rede local)")
+        if nvr and not same_subnet24(local, nvr):
+            log.warning("ATENCAO: o IP do NVR (%s) NAO esta na mesma sub-rede /24 do PC (%s). "
+                        "Se foi erro de digitacao, o firewall e a leitura RTSP bloquearao o NVR. "
+                        "Corrija 'nvr_ip' em [network] (ou deixe em branco) e reinicie o servico.",
+                        nvr, local)
 
     def stop(self) -> None:
         log.info("Encerrando serviço...")
